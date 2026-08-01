@@ -4,28 +4,36 @@ Design system: src/theme (tokens) and src/ui (markup).
 Deterministic engine: src/news2.py, src/time_interval.py, src/severity.py.
 Cohort: real ED visits from data/raw/triage_features_control.csv (src/data.py).
 
-Gemma is called for language only — it phrases an alert the rules already
-raised. It never assigns a band, an interval, or a priority.
+Gemma (src/agent.py) writes the reassessment brief: what changed, what to
+check first, and how the history colours the reading. It never decides who
+escalates or how long the interval is — those come from the rules and are
+handed to it as settled facts.
 """
 
-import json
-import os
 import random
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
-import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-from data import load_pool
-from news2 import news2
-from prompts import SYSTEM_PROMPT
-from severity import band, relaxing
-from theme import current_mode, inject_theme, toggle_mode
-from time_interval import next_eval_interval
-from ui import (
-    alert_card,
+# `streamlit run` puts the script's directory on sys.path, but importing this
+# module any other way (AppTest, a REPL) does not, and the sibling imports
+# below then fail. Assert it so the app runs from either directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from agent import reassessment_brief  # noqa: E402
+from data import load_pool  # noqa: E402
+from news2 import news2  # noqa: E402
+from severity import band, relaxing  # noqa: E402
+from theme import current_mode, inject_theme, toggle_mode  # noqa: E402
+from time_interval import next_eval_interval  # noqa: E402
+from ui import (  # noqa: E402
+    agent_brief,
     card,
+    countdown,
     detail_grid,
     figure,
     flow_steps,
@@ -42,8 +50,6 @@ from ui import (
 )
 
 load_dotenv()
-SPUR_API_KEY = os.getenv("SPUR_GEMMA_4_KEY")
-API_URL = "https://ai.spuric.com/v1/chat/completions"
 
 st.set_page_config(
     page_title="Triage Re-Evaluation Monitor",
@@ -60,6 +66,37 @@ def _clock(ts) -> str:
         return pd.Timestamp(ts).strftime("%H:%M")
     except (ValueError, TypeError):
         return "unknown"
+
+
+def minutes_left(due_at) -> float:
+    """Signed minutes to the recheck deadline. Negative means overdue."""
+    return (pd.Timestamp(due_at) - pd.Timestamp(datetime.now())).total_seconds() / 60
+
+
+def _due_label(due_at) -> str:
+    """Queue-row deadline. Overdue is never rounded away to "0 min"."""
+    left = minutes_left(due_at)
+    return f"{int(abs(left))} min over" if left < 0 else f"{int(left)} min"
+
+
+@st.fragment(run_every="20s")
+def live_countdown(patient_id: str) -> None:
+    """Ticks on its own so the deadline stays true without a page rerun.
+
+    Reads the queue fresh each tick rather than closing over a row, so a
+    reassessment recorded in between is reflected immediately.
+    """
+    queue = st.session_state.get("queue")
+    if queue is None or queue.empty:
+        return
+    match = queue[queue["ID"] == patient_id]
+    if match.empty:
+        return
+    row = match.iloc[0]
+    st.markdown(
+        countdown(minutes_left(row["DueAt"]), int(row["Interval"]["interval_min"])),
+        unsafe_allow_html=True,
+    )
 
 
 # NEWS2 thresholds per parameter, used only to flag a vital in the UI.
@@ -99,8 +136,61 @@ def recalculate_and_sort_queue(df: pd.DataFrame) -> pd.DataFrame:
         Delta=[int(s - p) for s, p in zip(scores, prev_scores)],
         _rank=[b["rank"] for b in bands],
     )
+
+    # The clock is derived, never stored as a literal: whenever the interval
+    # changes the due time moves with it, so a re-scored patient cannot keep
+    # an interval the rules no longer support.
+    df["DueAt"] = [
+        obs + timedelta(minutes=iv["interval_min"])
+        for obs, iv in zip(df["LastObsAt"], df["Interval"])
+    ]
+
     return df.sort_values(["_rank", "NEWS2_Score"], ascending=False) \
              .drop(columns=["_rank"]).reset_index(drop=True)
+
+
+# How stale the oldest and freshest observations are, as a multiple of each
+# patient's OWN reassessment interval. Above 1.0 is overdue.
+CLOCK_STALEST = 1.4
+CLOCK_FRESHEST = 0.1
+
+
+def anchor_clock(df: pd.DataFrame) -> pd.DataFrame:
+    """Map the dataset's recorded observation times onto the wall clock.
+
+    The dataset spans a whole day. Preserving its absolute spacing put
+    patients hundreds of minutes past due — true to the file, useless as a
+    board. Preserving it as flat minutes instead made almost everyone overdue,
+    because most intervals here are 15 to 30 minutes.
+
+    So staleness is expressed relative to each patient's own interval: the
+    oldest reading sits at 1.4x its interval (overdue), the freshest at 0.1x
+    (just checked). Recorded order is preserved, roughly a third arrive
+    overdue, and "overdue" means overdue against the rule that applies to
+    that patient rather than an arbitrary clock.
+    """
+    df = df.copy()
+
+    # Rank, not raw elapsed time: the recorded timestamps bunch up at the old
+    # end, which tipped most of the board overdue at once. Ranking keeps the
+    # recorded order but spreads staleness evenly across the cohort.
+    n = len(df)
+    if n <= 1:
+        position = pd.Series(1.0, index=df.index, dtype=float)
+    else:
+        position = (df["MeasuredAt"].rank(method="first") - 1) / (n - 1)
+
+    now = datetime.now()
+    last_obs = []
+    for pos, (_, row) in zip(position, df.iterrows()):
+        interval = next_eval_interval(
+            int(row["NEWS2_Score"]), int(row["Max_Single_Param"]), int(row["ESI"])
+        )["interval_min"]
+        staleness = CLOCK_STALEST - pos * (CLOCK_STALEST - CLOCK_FRESHEST)
+        last_obs.append(now - timedelta(minutes=interval * staleness))
+
+    df["LastObsAt"] = last_obs
+    return df
 
 
 OPENING_COHORT = 12
@@ -114,7 +204,9 @@ def patient_pool() -> pd.DataFrame:
 
 
 def initial_queue() -> pd.DataFrame:
-    return recalculate_and_sort_queue(patient_pool().head(OPENING_COHORT).copy())
+    return recalculate_and_sort_queue(
+        anchor_clock(patient_pool().head(OPENING_COHORT).copy())
+    )
 
 
 def admit_next(queue: pd.DataFrame) -> pd.DataFrame | None:
@@ -129,53 +221,39 @@ def admit_next(queue: pd.DataFrame) -> pd.DataFrame | None:
     remaining = pool[~pool["ID"].isin(already)]
     if remaining.empty:
         return None
-    arriving = remaining.head(1)
+
+    # A patient walking in now was observed at triage now, not hours ago.
+    arriving = remaining.head(1).copy()
+    arriving["LastObsAt"] = datetime.now()
+
     return recalculate_and_sort_queue(
-        pd.concat([queue, arriving], ignore_index=True) if not queue.empty else arriving.copy()
+        pd.concat([queue, arriving], ignore_index=True) if not queue.empty else arriving
     )
 
 
-def generate_focus_note(patient: pd.Series) -> str:
-    """Gemma API call using the structured JSON prompt.
-
-    Language only. The band, the interval, and the decision to alert were all
-    made by the deterministic rules before this function is ever called.
+def record_observation(queue: pd.DataFrame, patient_id: str, vitals: dict) -> pd.DataFrame:
+    """A nurse rechecked the patient. Store the new vitals as the latest
+    reading, move the previous latest into the comparison slot, and let the
+    pipeline re-derive score, band, interval and due time from scratch.
     """
-    drivers = [{"param": k, "score": int(v)}
-               for k, v in sorted(patient["Components"].items(), key=lambda kv: -kv[1]) if v > 0][:3]
-    interval = patient["Interval"]
+    q = queue.copy()
+    idx = q.index[q["ID"] == patient_id][0]
 
-    payload_facts = {
-        "patient": patient["ID"],
-        "news2_prev": int(patient["NEWS2_Prev"]),
-        "news2_now": int(patient["NEWS2_Score"]),
-        "drivers": drivers or [{"param": "no scoring parameter", "score": 0}],
-        "relevant_history": [patient["Complaint"], patient["History"]],
-        "interval_status": (f"reassessment due every {interval['interval_min']} min, "
-                            f"floored by {interval['driver']}"),
-    }
+    # The previous latest becomes the baseline the next delta is measured
+    # against, so "rose by 2 or more" compares this recheck to the last one.
+    previous_obs = pd.Timestamp(q.at[idx, "LastObsAt"])
+    q.at[idx, "NEWS2_Prev"] = int(q.at[idx, "NEWS2_Score"])
+    q.at[idx, "TriagedAt"] = previous_obs
 
-    if not SPUR_API_KEY:
-        names = ", ".join(d["param"] for d in drivers) or "no scoring parameter"
-        return (f"Recheck {patient['ID']} now. NEWS2 {payload_facts['news2_prev']} to "
-                f"{payload_facts['news2_now']}, driven by {names}. {patient['Complaint']}. "
-                "(Offline fallback — set SPUR_GEMMA_4_KEY for Gemma prose.)")
+    now = datetime.now()
+    q.at[idx, "MeasuredAt"] = now
+    q.at[idx, "LastObsAt"] = now
+    q.at[idx, "ObsGapMin"] = max(0, round((now - previous_obs).total_seconds() / 60))
 
-    # prompts.py names the slot {JSON}. Substituting the wrong token fails
-    # silently — Gemma would receive the literal placeholder and invent facts.
-    prompt = SYSTEM_PROMPT.replace("{JSON}", json.dumps(payload_facts))
-    try:
-        r = requests.post(
-            API_URL,
-            headers={"Authorization": f"Bearer {SPUR_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "spur-gemma4", "messages": [{"role": "user", "content": prompt}]},
-            timeout=20,
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as exc:
-        return (f"Recheck {patient['ID']} now. NEWS2 {payload_facts['news2_now']}. "
-                f"(Gemma unavailable: {exc})")
+    for column, value in vitals.items():
+        q.at[idx, column] = value
+
+    return recalculate_and_sort_queue(q)
 
 
 # --- State ------------------------------------------------------------------
@@ -304,6 +382,8 @@ if st.session_state.view == "focus":
                 **MD,
             )
 
+            live_countdown(patient["ID"])
+
             st.markdown(
                 vitals_table([
                     ("Resp", patient["RR"], _ABNORMAL["RR"](patient["RR"])),
@@ -317,33 +397,71 @@ if st.session_state.view == "focus":
             )
 
             st.markdown('<div class="action-row"></div>', **MD)
+
+            # --- Reassessment: the nurse rechecks and enters what they found
+            with st.expander("Record a reassessment", expanded=False):
+                with st.form(f"vitals_{patient['ID']}", border=False):
+                    v1, v2, v3 = st.columns(3)
+                    with v1:
+                        new_rr = st.number_input("Resp rate", 4, 60, int(patient["RR"]), 1)
+                        new_sbp = st.number_input("Systolic BP", 50, 260, int(patient["SBP"]), 1)
+                    with v2:
+                        new_spo2 = st.number_input("SpO2 %", 50, 100, int(patient["SpO2"]), 1)
+                        new_hr = st.number_input("Pulse", 20, 220, int(patient["HR"]), 1)
+                    with v3:
+                        new_temp = st.number_input("Temp C", 30.0, 43.0,
+                                                   float(patient["Temp"]), 0.1, format="%.1f")
+                        new_o2 = st.checkbox("On supplemental oxygen",
+                                             value=bool(patient["O2_supp"]))
+                    new_alert = st.checkbox("Alert and orientated", value=bool(patient["Alert"]))
+
+                    if st.form_submit_button("Save and re-score", type="primary",
+                                             width="stretch"):
+                        st.session_state.queue = record_observation(
+                            q, patient["ID"],
+                            {"RR": int(new_rr), "SpO2": int(new_spo2),
+                             "O2_supp": bool(new_o2), "SBP": int(new_sbp),
+                             "HR": int(new_hr), "Temp": round(float(new_temp), 1),
+                             "Alert": bool(new_alert)},
+                        )
+                        # The brief described the previous reading; it no longer holds.
+                        st.session_state.notes.pop(patient["ID"], None)
+                        st.rerun()
+
             c1, c2 = st.columns([1, 1])
             with c1:
-                if st.button("Generate focus note", type="primary", width="stretch"):
-                    with st.spinner("Gemma is phrasing the alert…"):
-                        st.session_state.notes[patient["ID"]] = generate_focus_note(patient)
+                if st.button("Generate reassessment brief", type="primary", width="stretch"):
+                    with st.spinner("Gemma is reading the trajectory and history…"):
+                        st.session_state.notes[patient["ID"]] = reassessment_brief(
+                            patient, b, interval
+                        )
             with c2:
                 if st.button("Acknowledge", width="stretch"):
                     st.session_state.queue = q[q["ID"] != patient["ID"]].reset_index(drop=True)
                     st.session_state.selected = None
                     st.rerun()
 
-            note = st.session_state.notes.get(patient["ID"])
             fired = bool(b["reasons"])
-            st.markdown(
-                alert_card(
-                    note or ("Press Generate focus note — Gemma phrases the alert. "
-                             "The rule below has already fired."
-                             if fired else
-                             "No reassessment rule has fired for this patient."),
-                    b["reasons"] or ["no rule fired"],
-                    (f"Interval floored by {interval['driver']}. NEWS2 band says "
-                     f"{interval['news2_says']} minutes, ESI floor says "
-                     f"{interval['esi_says']} minutes, and the stricter one wins."),
-                    fired=fired,
-                ),
-                **MD,
-            )
+            brief = st.session_state.notes.get(patient["ID"])
+            if brief is None:
+                st.markdown(
+                    card(
+                        f'<div class="brief__top">'
+                        f'{"" if not fired else ""}</div>'
+                        '<p class="t-body">Press <b>Generate reassessment brief</b>. Gemma '
+                        "reads the trajectory, the per-parameter breakdown, the comorbidities "
+                        "and the arrival mode, then writes what to check first. The escalation "
+                        "decision below was already made by the rules.</p>"
+                        f'<div class="brief__rule" style="margin-top:16px">'
+                        f'<span class="brief__rule-label">Escalation decided by</span>'
+                        f'<span class="brief__codes">'
+                        + "".join(f"<code>{r}</code>" for r in (b["reasons"] or ["no rule fired"]))
+                        + "</span></div>"
+                    ),
+                    **MD,
+                )
+            else:
+                st.markdown(agent_brief(brief, b["reasons"], fired), **MD)
 
 
 # --- View: reassessment queue -----------------------------------------------
@@ -403,7 +521,7 @@ elif st.session_state.view == "queue":
                     meta=[f"{row['Age']} years", row["Sex"], f"ESI {row['ESI']}", row["Arrival"]],
                     news2=int(row["NEWS2_Score"]),
                     band_key=row["Band"]["key"],
-                    due=f"{row['Interval']['interval_min']} min",
+                    due=_due_label(row["DueAt"]),
                     delta=int(row["Delta"]),
                     selected=row["ID"] == st.session_state.selected,
                 ),

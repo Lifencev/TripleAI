@@ -1,0 +1,12 @@
+# Streamlit's stock primaryColor is #FF4B4B. In this app red means "a
+# deterministic rule fired", so letting it tint checkboxes, form submits and
+# spinners would make the alert colour meaningless. Brand blue instead.
+[theme]
+primaryColor = "#0169ff"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

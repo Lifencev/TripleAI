@@ -552,6 +552,128 @@ span[class*="material-symbols"],
 .zones__row--watch    .zones__score { color: var(--sev-watch); }
 
 /* ==========================================================================
+   Countdown — the recheck clock
+   ========================================================================== */
+
+.countdown {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--s-4) var(--s-6);
+  border-left: 3px solid var(--sev-stable);
+}
+.countdown__label {
+  font-size: var(--t-label); font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.countdown__value {
+  font-size: var(--t-h2); font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.countdown__value small { font-size: var(--t-small); font-weight: 500; color: var(--ink-muted); }
+.countdown__sub { margin-left: auto; font-size: var(--t-small); color: var(--ink-muted); }
+
+.countdown--soon { border-left-color: var(--sev-watch); }
+.countdown--soon .countdown__value { color: var(--sev-watch); }
+
+.countdown--overdue { border-left-color: var(--sev-escalate); background: var(--sev-escalate-soft); }
+.countdown--overdue .countdown__label,
+.countdown--overdue .countdown__value { color: var(--sev-escalate); }
+.countdown--overdue .countdown__label { animation: pulse 1.8s ease-in-out infinite; }
+
+/* ==========================================================================
+   Agent brief
+   ========================================================================== */
+
+.brief {
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  border-left: 3px solid var(--sev-escalate);
+}
+.brief--calm { border-left-color: var(--sev-stable); }
+
+.brief__top { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.brief__headline {
+  font-size: var(--t-h2); line-height: 1.35; font-weight: 500;
+  color: var(--ink); margin: 0; letter-spacing: -0.01em;
+}
+
+.brief__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s-5) var(--s-6);
+}
+.brief__block h4 {
+  font-size: var(--t-label); font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+  margin: 0 0 var(--s-2);
+}
+.brief__block p { font-size: var(--t-small); line-height: 1.55; color: var(--ink-2); margin: 0; }
+
+.brief__checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-2); }
+.brief__checks li {
+  display: flex; align-items: flex-start; gap: var(--s-2);
+  font-size: var(--t-small); line-height: 1.45; color: var(--ink);
+}
+.brief__tick {
+  flex: none; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 10px; font-weight: 700; display: grid; place-items: center;
+  margin-top: 1px;
+}
+
+.brief__rule {
+  display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap;
+  padding-top: var(--s-4); border-top: 1px solid var(--line);
+}
+.brief__rule-label {
+  font-size: var(--t-label); font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.brief__codes { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.brief__codes code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px; background: var(--surface-2); border-radius: 6px;
+  padding: 3px 8px; color: var(--ink-2);
+}
+.brief__note { font-size: var(--t-small); color: var(--ink-muted); margin: 0; }
+
+/* Reassessment form. Form submits are stFormSubmitButton, not stButton, so
+   they miss the button rules above and fall back to Streamlit's own theme. */
+[data-testid="stFormSubmitButton"] button {
+  font-family: var(--font);
+  font-size: var(--t-small);
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  padding: 10px var(--s-5);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+[data-testid="stFormSubmitButton"] button:hover { filter: brightness(1.08); }
+[data-testid="stFormSubmitButton"] button p { color: inherit; font-weight: 600; }
+
+[data-testid="stExpander"] {
+  border: none;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+[data-testid="stExpander"] summary { font-family: var(--font); font-weight: 600; }
+[data-testid="stExpander"] summary p { font-size: var(--t-small); color: var(--ink); }
+
+/* ==========================================================================
    Method page
    ========================================================================== */
 
@@ -634,11 +756,27 @@ span[class*="material-symbols"],
   min-width: var(--rail-w) !important;
 }
 [data-testid="stSidebar"] > div { width: var(--rail-w) !important; min-width: var(--rail-w) !important; }
-/* Flush to the top corner — the mark is the anchor of the whole layout, so
-   it should not float in a pocket of padding. */
+/* Flush to the top corner. Streamlit puts a 60px empty stSidebarHeader above
+   the content and 20px of left padding on stSidebarContent, which pushed the
+   mark down and to the right of the nav icons below it. */
+[data-testid="stSidebarHeader"] { display: none !important; }
+[data-testid="stSidebarContent"] { padding: 0 !important; }
 [data-testid="stSidebar"] .block-container,
-[data-testid="stSidebarUserContent"] { padding: var(--s-3) 0 var(--s-5); }
-[data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] { gap: var(--s-2); align-items: center; }
+[data-testid="stSidebarUserContent"] {
+  padding: var(--s-4) 0 var(--s-5) !important;
+  width: 100% !important;
+}
+
+/* The content chain collapses to its narrowest child unless widths are
+   asserted, which left the logo centred on a 14px box instead of the rail. */
+[data-testid="stSidebarUserContent"] > div,
+[data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"],
+[data-testid="stSidebarUserContent"] [data-testid="stElementContainer"],
+[data-testid="stSidebarUserContent"] [data-testid="stMarkdown"],
+[data-testid="stSidebarUserContent"] [data-testid="stMarkdownContainer"] { width: 100% !important; }
+[data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
+  gap: var(--s-2); align-items: stretch;
+}
 [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"] { display: none; }
 
 .rail-logo {

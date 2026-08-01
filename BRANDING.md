@@ -141,6 +141,18 @@ as skin tone and drowns the organ zones — tried and rejected.
 
 ---
 
+## Running it
+
+```
+streamlit run src/app.py     # from the repo root
+```
+
+Run it from the **root**, not from `src/`. Streamlit only reads
+`.streamlit/config.toml` from the working directory, and that file resets
+`primaryColor` from Streamlit's stock `#FF4B4B` to brand blue. Start it from
+`src/` and every checkbox, form submit and spinner turns red — which in this
+app means "a deterministic rule fired".
+
 ## Components
 
 From [src/ui/components.py](src/ui/components.py). Every function returns an HTML
@@ -160,6 +172,21 @@ queue_row(rank, name, complaint, meta_list, news2, band_key, due, delta, selecte
 alert_card(why, reasons, interval_note, fired)
 figure(components)
 ```
+
+### The agent brief
+
+[src/agent.py](src/agent.py) is where Gemma does real work. It receives the
+full picture — trajectory, per-parameter NEWS2 breakdown, comorbidities,
+arrival mode, waiting time, which rules fired, and why the interval landed
+where it did — and returns a structured brief: headline, what changed, what to
+check first, how the history colours the reading, and why this window suits
+this patient.
+
+It is given the escalation decision and the interval as **settled facts** and
+is forbidden from re-deriving or contradicting them. Malformed or incomplete
+responses are rejected by `_validate()` and replaced with a deterministic
+brief built only from the same facts, so the panel can never show invented
+content.
 
 ### The alert card contract
 
@@ -197,6 +224,21 @@ fired rule, and never fill a surface with a severity colour.
 
 ---
 
+## The recheck clock
+
+`DueAt` is always derived, never stored as a literal: it is `LastObsAt +
+interval`, recomputed on every pass through `recalculate_and_sort_queue`. A
+re-scored patient therefore cannot keep an interval the rules no longer
+support. Recording a reassessment sets `LastObsAt` to now, which resets the
+countdown.
+
+`anchor_clock()` maps the dataset's recorded observation times onto the wall
+clock. Staleness is expressed as a multiple of each patient's **own** interval
+(oldest 1.4x, freshest 0.1x) rather than in flat minutes — the dataset spans a
+whole day, so absolute spacing put patients hundreds of minutes past due, and
+flat minutes tipped almost everyone overdue at once because most intervals here
+are 15 to 30 minutes.
+
 ## Streamlit gotchas already handled
 
 These cost real debugging time; don't reintroduce them.
@@ -212,6 +254,11 @@ These cost real debugging time; don't reintroduce them.
   `keyboard_double_arrow_left` into the chrome. `tokens.css` re-asserts the icon font.
 - **Headings** — Streamlit's own `h3` rule out-specifies a bare class, stranding
   sidebar headings on the light palette in dark mode.
+- **`primaryColor` defaults to red.** See "Running it" above.
+- **Form submits are `stFormSubmitButton`, not `stButton`**, so they miss the
+  button rules and fall back to Streamlit's own theme.
+- **`AppTest` does not put the script's directory on `sys.path`** the way
+  `streamlit run` does, so `app.py` asserts it itself.
 - **Editing `tokens.css` alone won't hot-reload** — the stylesheet is memoized
   and Streamlit only watches `.py`. Restart the server.
 - **Wrapping a long SVG path across Python string literals drops the joining
