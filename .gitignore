@@ -1,0 +1,17 @@
+# Environments
+venv/
+.venv/
+.vscode/
+
+# Secrets
+.env
+
+# Datasets
+data/raw/
+data/processed/
+
+# Cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+EOT
