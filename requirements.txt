@@ -13,3 +13,4 @@ python-dotenv
 requests
 gradio
 jupyter
+python-dotenv
