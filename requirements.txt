@@ -1,0 +1,15 @@
+# RAG & Embeddings
+langchain
+langchain-community
+chromadb
+pypdf
+
+# Data Handling
+pandas
+numpy
+
+# Environment, API Client & UI
+python-dotenv
+requests
+gradio
+jupyter
