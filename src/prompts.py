@@ -1,5 +1,3 @@
-# src/prompts.py
-
 SYSTEM_PROMPT = """
 You write one-line clinical alerts for an emergency-department nurse.
 
@@ -34,5 +32,6 @@ Recheck John Doe now. NEWS2 4→7, driven by resp rate 22→30 and new O2
 requirement. COPD, prior exacerbation admission. Reassessment overdue 8 min.
 
 Now write the alert for this input:
-{patient_json}
+{JSON}
+
 """
