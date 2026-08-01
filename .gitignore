@@ -14,4 +14,4 @@ data/processed/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-EOT
+EOTdf.csv
