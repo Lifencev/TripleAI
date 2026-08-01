@@ -2,141 +2,172 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
+import random
 from dotenv import load_dotenv
+import json
 
-# 1. Load environment variables
+# Import the deterministic NEWS2 calculator
+from news2 import news2
+from prompts import SYSTEM_PROMPT 
+
+# --- Environment Setup ---
 load_dotenv()
 SPUR_API_KEY = os.getenv("SPUR_GEMMA_4_KEY")
 API_URL = "https://ai.spuric.com/v1/chat/completions"
 
-st.set_page_config(page_title="Triage In Light Speed", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Triage Re-Evaluation Copilot", page_icon="🏥", layout="wide")
 
-# --- Helper Functions ---
-@st.cache_data
-def load_patient_data():
-    """
-    Loads the patient CSV file, handling specific European formatting 
-    such as semicolon delimiters and comma decimal separators.
-    """
-    try:
-        # delimiter=';' handles the semicolon-separated columns
-        # decimal=',' parses European number formats (e.g., 5,00 -> 5.0)
-        # encoding='latin-1' avoids UnicodeDecodeError for special characters
-        return pd.read_csv(
-            "data/raw/data.csv", 
-            delimiter=";", 
-            decimal=",", 
-            encoding="latin-1"
-        )
-    except FileNotFoundError:
-        # Fallback to empty dataframe with the actual dataset columns
-        return pd.DataFrame(columns=[
-            "Group", "Sex", "Age", "Patients number per hour", "Arrival mode", 
-            "Injury", "Chief_complain", "Mental", "Pain", "NRS_pain", "SBP", 
-            "DBP", "HR", "RR", "BT", "Saturation", "KTAS_RN", "Diagnosis in ED", 
-            "Disposition", "KTAS_expert", "Error_group", "Length of stay_min", 
-            "KTAS duration_min", "mistriage"
-        ])
-
-def get_gemma_rationale(patient_record):
-    """Sends patient data to Gemma 4 to get a clinical triage assessment."""
-    if not SPUR_API_KEY:
-        return "Error: SPUR_GEMMA_4_KEY missing in .env file."
+# --- Core Logic & State Management ---
+def recalculate_and_sort_queue(df):
+    """Applies the deterministic NEWS2 rules to the dataframe and sorts it."""
+    if df.empty:
+        return df
         
-    # Динамічно підставляємо реальні колонки з вашого data.csv
-    prompt = f"""
-    You are an expert ER triage AI. Assess this patient and explain why they need priority care.
-    Keep the explanation under 3 sentences. State a priority level (1-Critical to 5-Non-Urgent).
+    scores = []
+    max_params = []
     
-    Patient Details:
-    Age: {patient_record.get('Age', 'Unknown')}
-    Chief Complain: {patient_record.get('Chief_complain', 'Unknown')}
-    Pain Level (NRS): {patient_record.get('NRS_pain', 'Unknown')}
-    Vitals: 
-      - Heart Rate: {patient_record.get('HR', 'Unknown')}
-      - Blood Pressure: {patient_record.get('SBP', 'Unknown')} / {patient_record.get('DBP', 'Unknown')}
-      - Temp: {patient_record.get('BT', 'Unknown')} °C
-      - Oxygen Sat: {patient_record.get('Saturation', 'Unknown')}%
-    """
+    for _, row in df.iterrows():
+        result = news2(row['RR'], row['SpO2'], row['O2_supp'], row['SBP'], row['HR'], row['Temp'], row['Alert'])
+        scores.append(result['aggregate'])
+        max_params.append(result['max_single_param'])
+        
+    df['NEWS2_Score'] = scores
+    df['Max_Single_Param'] = max_params
     
-    headers = {
-        "Authorization": f"Bearer {SPUR_API_KEY}",
-        "Content-Type": "application/json"
+    # Sort: Highest score first.
+    return df.sort_values(by='NEWS2_Score', ascending=False).reset_index(drop=True)
+
+def initialize_mock_data():
+    """Generates the initial waiting room state with an expanded patient roster."""
+    data = [
+        {"ID": "P001", "Name": "John Doe", "Age": 68, "RR": 22, "SpO2": 92, "O2_supp": True, "SBP": 105, "HR": 115, "Temp": 38.2, "Alert": True, "Chief_complain": "COPD Exacerbation"},
+        {"ID": "P002", "Name": "Jane Smith", "Age": 45, "RR": 16, "SpO2": 98, "O2_supp": False, "SBP": 120, "HR": 85, "Temp": 36.6, "Alert": True, "Chief_complain": "Ankle sprain"},
+        {"ID": "P003", "Name": "Bob Lee", "Age": 75, "RR": 26, "SpO2": 89, "O2_supp": False, "SBP": 88, "HR": 135, "Temp": 39.1, "Alert": False, "Chief_complain": "Sepsis protocol"},
+        {"ID": "P004", "Name": "Alice Wong", "Age": 32, "RR": 18, "SpO2": 99, "O2_supp": False, "SBP": 115, "HR": 72, "Temp": 37.0, "Alert": True, "Chief_complain": "Mild abdominal pain"},
+        {"ID": "P005", "Name": "David Kim", "Age": 52, "RR": 14, "SpO2": 96, "O2_supp": False, "SBP": 145, "HR": 90, "Temp": 37.1, "Alert": True, "Chief_complain": "Severe back pain"},
+        {"ID": "P006", "Name": "Sarah Jenkins", "Age": 28, "RR": 20, "SpO2": 100, "O2_supp": False, "SBP": 110, "HR": 105, "Temp": 38.5, "Alert": True, "Chief_complain": "Fever and chills"},
+        {"ID": "P007", "Name": "Michael Chang", "Age": 81, "RR": 24, "SpO2": 94, "O2_supp": True, "SBP": 95, "HR": 110, "Temp": 36.2, "Alert": False, "Chief_complain": "Altered mental status"},
+        {"ID": "P008", "Name": "Emily Davis", "Age": 19, "RR": 16, "SpO2": 99, "O2_supp": False, "SBP": 120, "HR": 75, "Temp": 36.8, "Alert": True, "Chief_complain": "Wrist injury"}
+    ]
+    df = pd.DataFrame(data)
+    return recalculate_and_sort_queue(df)
+
+def generate_focus_note(patient):
+    """Gemma API call using the structured JSON prompt."""
+    
+    # Construct the JSON payload required by the prompt.
+    # Note: Since we don't have historical data in the MVP yet, 
+    # we represent prev/now as the current score to fulfill the prompt structure.
+    patient_data = {
+        "patient": patient['Name'],
+        "news2_prev": "N/A", # Placeholder until historical data is added
+        "news2_now": int(patient['NEWS2_Score']),
+        "drivers": [
+            # In a real app, you would diff the old and new vitals here.
+            {"param": "Current Vitals", "state": f"RR {patient['RR']}, SpO2 {patient['SpO2']}%, SBP {patient['SBP']}, HR {patient['HR']}, Temp {patient['Temp']}°C"}
+        ],
+        "relevant_history": [patient['Chief_complain']],
+        "interval_status": "Immediate re-evaluation required based on current NEWS2."
     }
     
-    # Стандартний формат payload для Chat Completions
-    payload = {
-        "model": "spur-gemma4", # <--- Назва моделі передається саме тут!
-        "messages": [{"role": "user", "content": prompt}]
-    }
+    # Inject the JSON into the system prompt
+    formatted_prompt = SYSTEM_PROMPT.replace("{patient_json}", json.dumps(patient_data))
+    
+    headers = {"Authorization": f"Bearer {SPUR_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": "spur-gemma4", "messages": [{"role": "user", "content": formatted_prompt}]}
     
     try:
         response = requests.post(API_URL, headers=headers, json=payload)
-        response.raise_for_status() # Зупинить виконання і покаже помилку, якщо статус не 200 OK
+        response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"AI Assessment failed: {e}"
+        return f"System Alert: Check patient vitals immediately. Error: {e}"
 
-# --- State Initialization ---
-if "patient_db" not in st.session_state:
-    st.session_state.patient_db = load_patient_data()
-if "current_index" not in st.session_state:
-    st.session_state.current_index = 0
-if "current_patient" not in st.session_state:
-    st.session_state.current_patient = None
+def highlight_critical_patients(row):
+    """Pandas CSS styling."""
+    if row['NEWS2_Score'] >= 5 or row['Max_Single_Param'] == 3:
+        return ['background-color: rgba(255, 75, 75, 0.3)'] * len(row)
+    return [''] * len(row)
 
-# --- UI Layout ---
-st.title("🏥 Clinical ER Triage System")
+# --- Session State Initialization ---
+if "queue" not in st.session_state:
+    st.session_state.queue = initialize_mock_data()
+if "current_note" not in st.session_state:
+    st.session_state.current_note = None
 
-tab_focus, tab_macro = st.tabs(["🩺 Current Patient Assessment", "📋 ER Macro View"])
+# --- Streamlit UI ---
+st.title("🏥 Triage Re-Evaluation Copilot")
+st.markdown("Monitoring the waiting room. Reassessment queue prioritized by NEWS2 deterioration.")
+
+tab_focus, tab_macro = st.tabs(["🩺 Next Action Required", "📋 Risk-Ranked Queue (Macro View)"])
 
 # --- Window 1: Current Patient ---
 with tab_focus:
-    st.header("Immediate Triage")
-    
-    # Button to fetch the next patient from the CSV
-    # Replace deprecated parameter in buttons and dataframes
+    if not st.session_state.queue.empty:
+        st.header("Immediate Triage Action")
+        top_patient = st.session_state.queue.iloc[0]
+        
+        st.error(f"**Re-evaluate immediately:** {top_patient['Name']} (NEWS2: {top_patient['NEWS2_Score']})")
+        
+        # Action Buttons (Now separated into 3 columns)
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        
+        with col_btn1:
+            if st.button("🧠 Generate Copilot Focus Note", type="primary", width="stretch"):
+                with st.spinner("Gemma is synthesizing context..."):
+                    st.session_state.current_note = generate_focus_note(top_patient)
+        
+        with col_btn2:
+            if st.button("✅ Acknowledge & Clear Patient", width="stretch"):
+                # Remove the top patient and reset the AI note
+                st.session_state.queue = st.session_state.queue.iloc[1:].reset_index(drop=True)
+                st.session_state.current_note = None
+                st.rerun()
+                
+        with col_btn3:
+            if st.button("⏸️ Don't Change Priority", width="stretch"):
+                # Clear the note and refresh, but keep the patient exactly where they are in the queue
+                st.session_state.current_note = None
+                st.rerun()
 
-    if st.button("🚨 Fetch Next Patient", type="primary", width="stretch"):
-        if st.session_state.current_index < len(st.session_state.patient_db):
-            # Grab the next patient row as a dictionary
-            raw_record = st.session_state.patient_db.iloc[st.session_state.current_index].to_dict()
-            
-            # Trigger the API call with a loading spinner
-            with st.spinner("Gemma 4 is analyzing patient data..."):
-                ai_assessment = get_gemma_rationale(raw_record)
-            
-            # Save the processed data to session state for the UI
-            st.session_state.current_patient = {
-                "name": raw_record.get("Name", "Unknown"),
-                "details": raw_record,
-                "ai_notes": ai_assessment
-            }
-            
-            # Increment index so the next click gets the next patient
-            st.session_state.current_index += 1
-            st.rerun()
-        else:
-            st.warning("No more patients in the queue.")
-        
-    # Visualization of current patient
-    if st.session_state.current_patient:
+        # Display the AI note if it exists
+        if st.session_state.current_note:
+            st.info(f"**Gemma Focus Note:** {st.session_state.current_note}")
+                
         st.divider()
-        col1, col2 = st.columns(2)
+        st.subheader("Critical Vitals Snapshot")
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("NEWS2 Score", top_patient['NEWS2_Score'])
+        col_v2.metric("SpO2", f"{top_patient['SpO2']}%")
+        col_v3.metric("Heart Rate", top_patient['HR'])
         
-        with col1:
-            st.subheader("Patient Vitals & Intake")
-            # Dynamically display all columns from the CSV
-            for key, value in st.session_state.current_patient["details"].items():
-                st.write(f"**{key}:** {value}")
-            
-        with col2:
-            st.subheader("Gemma AI Assessment")
-            st.info(st.session_state.current_patient["ai_notes"])
+    else:
+        st.success("The waiting room is currently clear. No patients require immediate re-evaluation.")
+        if st.button("Reset Demo Data"):
+            st.session_state.queue = initialize_mock_data()
+            st.rerun()
 
 # --- Window 2: Whole Picture ---
 with tab_macro:
     st.header("Overall ER Status")
-    st.write("All raw patient records from the CSV dataset.")
-
-    st.dataframe(st.session_state.patient_db, hide_index=True, width="stretch")
+    
+    # The killer feature for the demo: Simulating deterioration
+    if st.button("⚠️ Simulate Patient Deterioration", help="Forces a stable patient's vitals to crash to demonstrate the dynamic queue."):
+        if len(st.session_state.queue) > 1:
+            # Find the patient at the bottom of the queue (most stable)
+            last_idx = len(st.session_state.queue) - 1
+            
+            # Drastically worsen their vitals
+            st.session_state.queue.at[last_idx, 'SpO2'] = random.randint(85, 89)
+            st.session_state.queue.at[last_idx, 'RR'] = random.randint(25, 30)
+            st.session_state.queue.at[last_idx, 'HR'] = random.randint(130, 145)
+            
+            # Recalculate and sort immediately
+            st.session_state.queue = recalculate_and_sort_queue(st.session_state.queue)
+            st.rerun()
+    
+    st.write("Patients are dynamically sorted by their NEWS2 deterioration risk. High-risk patients are highlighted in red.")
+    
+    if not st.session_state.queue.empty:
+        styled_queue = st.session_state.queue.style.apply(highlight_critical_patients, axis=1)
+        st.dataframe(styled_queue, width="stretch", hide_index=True)
