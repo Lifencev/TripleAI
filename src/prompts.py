@@ -16,7 +16,7 @@ RULES:
   no explanation, no extra lines.
 
 FORMAT (follow this shape exactly):
-"Recheck {patient} now. NEWS2 {prev}→{now}, driven by {drivers}.
+"Recheck {patient} in {interval} minutes. NEWS2 {prev}→{now}, driven by {drivers}.
 {relevant history}.{overdue clause if present}"
 
 EXAMPLE
@@ -29,7 +29,7 @@ Input:
 
 Output:
 Recheck John Doe now. NEWS2 4→7, driven by resp rate 22→30 and new O2
-requirement. COPD, prior exacerbation admission. Reassessment overdue 8 min.
+requirement. COPD, prior exacerbation admission.
 
 Now write the alert for this input:
 {JSON}

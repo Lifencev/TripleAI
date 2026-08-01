@@ -42,7 +42,7 @@
   --sev-watch-soft:    rgba(227, 154, 46, 0.11);
   --sev-escalate-soft: rgba(198, 48, 50, 0.07);
 
-  --body-fill:     rgba(10, 12, 16, 0.035);
+  --body-fill:     #f2f3f5;
   --body-line:     rgba(10, 12, 16, 0.22);
   --zone-idle:     rgba(10, 12, 16, 0.10);
 }
@@ -78,7 +78,7 @@
   --sev-watch-soft:    rgba(240, 180, 84, 0.13);
   --sev-escalate-soft: rgba(240, 85, 90, 0.11);
 
-  --body-fill:     rgba(255, 255, 255, 0.045);
+  --body-fill:     #1c2026;
   --body-line:     rgba(255, 255, 255, 0.26);
   --zone-idle:     rgba(255, 255, 255, 0.10);
 }
@@ -290,27 +290,89 @@ span[class*="material-symbols"],
 }
 .detail__value { font-size: var(--t-body); color: var(--ink); line-height: 1.35; }
 
-.vitals { display: flex; flex-wrap: wrap; gap: var(--s-2); }
-.vital {
-  flex: 1 1 0;
-  min-width: 92px;
-  padding: var(--s-3);
-  border-radius: var(--r-tile);
-  background: var(--surface-2);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* Vitals as one table rather than six padded tiles — six containers for six
+   numbers is more chrome than content. */
+.vt {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
 }
-.vital__label {
+.vt th {
   font-size: var(--t-label);
   font-weight: 600;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ink-muted);
+  text-align: left;
+  padding: var(--s-4) var(--s-5) 2px;
+  font-family: var(--font);
 }
-.vital__value { font-size: var(--t-h3); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
-.vital--flag .vital__value { color: var(--sev-escalate); }
-.vital--flag .vital__label { color: var(--sev-escalate); opacity: 0.8; }
+.vt td {
+  font-size: var(--t-h2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  padding: 0 var(--s-5) var(--s-4);
+  white-space: nowrap;
+}
+.vt td.vt--flag { color: var(--sev-escalate); }
+
+/* Breathing room between the reading blocks and the actions that follow. */
+.action-row { height: var(--s-2); }
+
+/* ==========================================================================
+   Score trend — the two NEWS2 readings and where each came from
+   ========================================================================== */
+
+.score-trend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-6);
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+  padding: var(--s-5) var(--s-6);
+  border-left: 3px solid transparent;
+}
+.score-trend--up   { border-left-color: var(--sev-escalate); }
+.score-trend--down { border-left-color: var(--sev-stable); }
+
+.score-trend__main { display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap; }
+.score-trend__pair {
+  display: flex; align-items: baseline; gap: var(--s-3);
+  font-variant-numeric: tabular-nums;
+}
+.score-trend__from { font-size: var(--t-h2); font-weight: 500; color: var(--ink-muted); }
+.score-trend__arrow { font-size: var(--t-h3); color: var(--ink-muted); }
+.score-trend__to {
+  font-size: var(--t-metric); font-weight: 500; line-height: 1;
+  letter-spacing: -0.03em; color: var(--ink);
+}
+.score-trend--up .score-trend__to { color: var(--sev-escalate); }
+
+.score-trend__meta { display: flex; flex-direction: column; gap: 2px; }
+.score-trend__cap {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.score-trend__times { font-size: var(--t-small); color: var(--ink-2); }
+
+.score-trend__side { display: flex; gap: var(--s-7); }
+.score-trend__stat { display: flex; flex-direction: column; gap: 2px; }
+.score-trend__stat span {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.score-trend__stat b {
+  font-size: var(--t-h2); font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.score-trend__stat b.is-max { color: var(--sev-escalate); }
 
 /* ==========================================================================
    Severity pill
@@ -375,9 +437,12 @@ span[class*="material-symbols"],
    Queue — only escalating rows tint. Everything else stays quiet.
    ========================================================================== */
 
+/* Every column after the name is a FIXED width. With `auto` on the delta
+   chip, a wider chip ("No change") shrank the 1fr name column and dragged
+   the NEWS2 numeral left, so the scores never lined up down the list. */
 .qrow {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 76px auto 96px;
+  grid-template-columns: 34px minmax(0, 1fr) 72px 104px 96px;
   align-items: center;
   gap: var(--s-4);
   padding: var(--s-4) var(--s-5);
@@ -402,7 +467,8 @@ span[class*="material-symbols"],
 .qrow__meta { display: flex; gap: var(--s-4); flex-wrap: wrap; font-size: var(--t-small);
               color: var(--ink-muted); margin-top: 3px; }
 
-.qrow__news { text-align: left; }
+.qrow__news { text-align: center; }
+.qrow__delta { display: flex; justify-content: center; }
 .qrow__news-val { font-size: var(--t-h2); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); line-height: 1; }
 .qrow__news small { display: block; font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em; color: var(--ink-muted); margin-top: 3px; }
 .qrow--escalate .qrow__news-val { color: var(--sev-escalate); }
@@ -486,6 +552,77 @@ span[class*="material-symbols"],
 .zones__row--watch    .zones__score { color: var(--sev-watch); }
 
 /* ==========================================================================
+   Method page
+   ========================================================================== */
+
+.panel { padding: var(--s-6); border-left: 3px solid transparent; height: 100%; }
+.panel--escalate { border-left-color: var(--sev-escalate); }
+.panel__lead { margin: 6px 0 var(--s-5); }
+
+.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-4); }
+.rule { display: flex; gap: var(--s-4); align-items: flex-start; }
+.rule__n {
+  flex: none; width: 26px; height: 26px; border-radius: 9px;
+  background: var(--surface-2); color: var(--ink-muted);
+  font-size: var(--t-label); font-weight: 700;
+  display: grid; place-items: center; font-variant-numeric: tabular-nums;
+}
+.rule__body { display: flex; flex-direction: column; gap: 2px; }
+.rule__body b { font-size: var(--t-body); font-weight: 600; color: var(--ink); line-height: 1.35; }
+.rule__sub { font-size: var(--t-small); color: var(--ink-muted); line-height: 1.45; }
+
+.split { display: flex; flex-direction: column; gap: var(--s-2); }
+.split__head, .split__row {
+  display: grid; grid-template-columns: 84px 1fr 1fr; gap: var(--s-4); align-items: start;
+}
+.split__head div {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted); padding-bottom: var(--s-2);
+}
+.split__row { padding: var(--s-4) 0; border-top: 1px solid var(--line); }
+.split__actor { font-size: var(--t-body); font-weight: 600; color: var(--ink); }
+.split__does  { font-size: var(--t-small); color: var(--ink-2); line-height: 1.45; }
+.split__never { font-size: var(--t-small); color: var(--ink-muted); line-height: 1.45; }
+
+.flow { display: flex; gap: var(--s-2); flex-wrap: wrap; margin-bottom: var(--s-5); }
+.flow__step {
+  flex: 1 1 170px;
+  background: var(--surface); border-radius: var(--r-tile);
+  box-shadow: var(--shadow-card); padding: var(--s-4) var(--s-5);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.flow__n {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: var(--t-label); font-weight: 700;
+  display: grid; place-items: center; margin-bottom: 4px;
+}
+.flow__step b { font-size: var(--t-body); font-weight: 600; color: var(--ink); }
+.flow__step span:last-child { font-size: var(--t-small); color: var(--ink-muted); line-height: 1.4; }
+
+.interval-demo {
+  display: flex; align-items: center; gap: var(--s-5); flex-wrap: wrap;
+  margin-top: var(--s-5);
+}
+.interval-demo__side, .interval-demo__out {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--s-3) var(--s-5); border-radius: var(--r-tile);
+  background: var(--surface-2);
+}
+.interval-demo__out { background: var(--accent-soft); }
+.interval-demo span {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.interval-demo b { font-size: var(--t-h2); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.interval-demo__out b { color: var(--accent); }
+.interval-demo__op {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.interval-demo__eq { font-size: var(--t-h2); color: var(--ink-muted); }
+
+/* ==========================================================================
    The icon rail (Streamlit sidebar)
    ========================================================================== */
 
@@ -497,15 +634,17 @@ span[class*="material-symbols"],
   min-width: var(--rail-w) !important;
 }
 [data-testid="stSidebar"] > div { width: var(--rail-w) !important; min-width: var(--rail-w) !important; }
+/* Flush to the top corner — the mark is the anchor of the whole layout, so
+   it should not float in a pocket of padding. */
 [data-testid="stSidebar"] .block-container,
-[data-testid="stSidebarUserContent"] { padding: var(--s-5) 0 var(--s-5); }
+[data-testid="stSidebarUserContent"] { padding: var(--s-3) 0 var(--s-5); }
 [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] { gap: var(--s-2); align-items: center; }
 [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"] { display: none; }
 
 .rail-logo {
-  width: 42px; height: 42px;
-  margin: 0 auto var(--s-5);
-  border-radius: 13px;
+  width: 44px; height: 44px;
+  margin: 0 auto var(--s-4);
+  border-radius: 14px;
   background: var(--accent);
   color: var(--accent-ink);
   display: grid; place-items: center;
@@ -567,12 +706,12 @@ span[class*="material-symbols"],
    a wrapping <div> emitted via st.markdown does NOT contain the widget in the
    DOM, so descendant selectors from a hand-rolled wrapper never match. */
 [class*="st-key-open_"] button {
-  width: 38px; height: 38px; min-height: 38px;
+  width: 40px; height: 40px; min-height: 40px;
   padding: 0; border-radius: 50%;
-  background: transparent; box-shadow: none;
+  background: var(--surface); box-shadow: var(--shadow-card);
   color: var(--ink-muted);
 }
-[class*="st-key-open_"] button:hover { background: var(--accent-soft); color: var(--accent); }
+[class*="st-key-open_"] button:hover { background: var(--accent); color: var(--accent-ink); }
 [class*="st-key-open_"] button p { display: none; }
 
 .stSelectbox div[data-baseweb="select"] > div,

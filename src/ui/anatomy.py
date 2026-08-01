@@ -15,29 +15,35 @@ from severity import ZONE_LABELS, ZONE_ORDER, zone_levels
 from .body_asset import BODY, EARS, TRANSFORM, VIEWBOX
 
 # --- Organ geometry, authored against the body's coordinate space -----------
-# Thorax spans y 60-105; lungs leave a mediastinal gap at x 70-76 so the heart
-# stays a distinct shape when both are escalating.
+# Thorax interior spans roughly x 50-96, y 58-104. Lungs leave a mediastinal
+# gap so the heart stays a distinct shape when both are escalating, and the
+# patient's left lung carries a cardiac notch for it to sit in.
 
 _LUNG_L = (
-    "M70 63 c-8 -1 -14 2 -17 9 c-3 9 -3 20 -1 29"
-    "c1 6 5 9 9 7 c4 -2 8 -8 8 -15 c1 -10 1 -20 1 -30 z"
+    "M68 60 C60 60 55 66 53 76 C51 86 52 96 55 102"
+    "C59 106 65 104 67 98 C69 90 69 74 68 60 z"
 )
 _LUNG_R = (
-    "M76 63 c8 -1 14 2 17 9 c3 9 3 20 1 29"
-    "c-1 6 -5 9 -9 7 c-4 -2 -8 -8 -8 -15 c-1 -10 -1 -20 -1 -30 z"
+    "M79 60 C87 60 92 66 94 76 C96 86 95 96 92 102"
+    "C88 106 83 104 81 98"
+    # cardiac notch — the indent the heart occupies
+    "C80 94 80 91 83 89 C80 87 79 82 79 60 z"
 )
 _HEART = (
-    "M73 76 c6 -2 12 1 13 8 c2 7 -1 14 -6 18"
-    "c-3 2 -6 2 -9 0 c-6 -3 -9 -10 -7 -16 c1 -6 4 -9 9 -10 z"
+    "M79 77 C85 75 90 80 90 88 C90 96 86 102 80 103"
+    "C76 103 73 99 73 92 C73 84 75 79 79 77 z"
 )
 _VESSELS = (
-    "M73 78 C73 70 75 65 81 63"
-    "M70 78 C67 70 63 65 57 64"
-    "M74 102 L74 140"
-    "M74 140 C74 148 70 152 65 155"
-    "M74 140 C74 148 78 152 83 155"
+    # aortic arch and its head/neck branches
+    "M79 77 C78 69 79 64 84 61"
+    "M76 78 C73 70 70 65 65 63"
+    # descending aorta and the iliac bifurcation
+    "M80 100 L78 140"
+    "M78 140 C78 148 74 152 69 155"
+    "M78 140 C78 148 82 152 87 155"
 )
-_HEAD = {"cx": "73", "cy": "24", "rx": "13", "ry": "15"}
+# Cranium only. Reaching down over the jaw made the zone read as a face.
+_HEAD = {"cx": "73", "cy": "23", "rx": "13", "ry": "14.5"}
 
 # score -> (colour var, fill opacity, stroke opacity, extra class)
 _PAINT = {
@@ -69,6 +75,10 @@ def body_svg(components: dict[str, int]) -> str:
     outline = "var(--body-line)" if temp == 0 else f"var({_PAINT[temp][0]})"
     outline_w = "0.7" if temp == 0 else "1.6"
 
+    # The torso path ends in a flat horizontal edge at the neck, and the head
+    # path's jaw dips below it. Stroking both draws that flat edge straight
+    # across the chin, so the head goes on top with an OPAQUE fill to cover
+    # it. Opaque also stops the overlap from darkening.
     return f"""
 <svg class="figure__svg" viewBox="{VIEWBOX}" role="img"
      aria-label="Patient figure with NEWS2 component zones highlighted">

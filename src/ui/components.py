@@ -131,15 +131,58 @@ def detail_grid(items: list[tuple]) -> str:
     return f'<div class="detail-grid">{"".join(cells)}</div>'
 
 
-def vitals_row(items: list[tuple[str, str, bool]]) -> str:
-    """(label, value, is_abnormal). Abnormal values get weight, not a fill."""
+def vitals_table(items: list[tuple[str, str, bool]]) -> str:
+    """(label, value, is_abnormal) as one compact table, not six boxes.
+
+    Six padded tiles for six numbers is more chrome than content. A single
+    table reads in one pass; abnormal values take colour and weight rather
+    than a container of their own.
+    """
+    heads = "".join(f"<th>{escape(label)}</th>" for label, _, _ in items)
     cells = "".join(
-        f'<div class="vital{" vital--flag" if flag else ""}">'
-        f'<span class="vital__label">{escape(label)}</span>'
-        f'<span class="vital__value">{escape(str(value))}</span></div>'
-        for label, value, flag in items
+        f'<td class="{"vt--flag" if flag else ""}">{escape(str(value))}</td>'
+        for _, value, flag in items
     )
-    return f'<div class="vitals">{cells}</div>'
+    return (
+        f'<table class="vt"><thead><tr>{heads}</tr></thead>'
+        f"<tbody><tr>{cells}</tr></tbody></table>"
+    )
+
+
+def score_trend(prev: int, now: int, delta: int | None,
+                prev_at: str, now_at: str, gap_min: int,
+                worst_param: int, recheck: str) -> str:
+    """The two NEWS2 readings, with where each came from.
+
+    "Now" is the latest recorded observation, not a live number — saying when
+    each reading was taken is the difference between a trustworthy panel and
+    an implied real-time feed that does not exist.
+    """
+    tone = ""
+    if delta is not None and delta >= 2:
+        tone = " score-trend--up"
+    elif delta is not None and delta <= -2:
+        tone = " score-trend--down"
+
+    return (
+        f'<div class="score-trend{tone}">'
+        f'<div class="score-trend__main">'
+        f'<div class="score-trend__pair">'
+        f'<span class="score-trend__from">{prev}</span>'
+        f'<span class="score-trend__arrow">&rarr;</span>'
+        f'<span class="score-trend__to">{now}</span>'
+        f"</div>"
+        f'<div class="score-trend__meta">'
+        f'<span class="score-trend__cap">NEWS2 at triage then latest reading</span>'
+        f'<span class="score-trend__times">{escape(prev_at)} then {escape(now_at)}'
+        f", {gap_min} minutes apart</span>"
+        f"</div>{delta_chip(delta)}</div>"
+        f'<div class="score-trend__side">'
+        f'<div class="score-trend__stat"><span>Worst parameter</span>'
+        f'<b class="{"is-max" if worst_param == 3 else ""}">{worst_param}</b></div>'
+        f'<div class="score-trend__stat"><span>Recheck in</span><b>{escape(recheck)}</b></div>'
+        f"</div></div>"
+    )
 
 
 # --- Patient header ---------------------------------------------------------
@@ -210,3 +253,51 @@ def alert_card(why: str, reasons: list[str], interval_note: str = "",
 def card(inner_html: str, extra: str = "") -> str:
     """Escape hatch for pre-built markup that needs the card shell."""
     return f'<div class="card {extra}">{inner_html}</div>'
+
+
+# --- Method page ------------------------------------------------------------
+
+def rule_list(title: str, lead: str, rules: list[tuple[str, str]],
+              tone: str = "escalate") -> str:
+    """Numbered rules, each with its plain-language consequence."""
+    items = "".join(
+        f'<li class="rule"><span class="rule__n">{i:02d}</span>'
+        f'<span class="rule__body"><b>{escape(head)}</b>'
+        f'<span class="rule__sub">{escape(sub)}</span></span></li>'
+        for i, (head, sub) in enumerate(rules, 1)
+    )
+    return (
+        f'<div class="card panel panel--{tone}">'
+        f'<h3 class="t-h3">{escape(title)}</h3>'
+        f'<p class="t-small panel__lead">{escape(lead)}</p>'
+        f'<ol class="rules">{items}</ol></div>'
+    )
+
+
+def split_panel(title: str, lead: str, rows: list[tuple[str, str, str]]) -> str:
+    """Who-does-what table: (actor, does, never)."""
+    body = "".join(
+        f'<div class="split__row">'
+        f'<div class="split__actor">{escape(actor)}</div>'
+        f'<div class="split__does">{escape(does)}</div>'
+        f'<div class="split__never">{escape(never)}</div></div>'
+        for actor, does, never in rows
+    )
+    return (
+        f'<div class="card panel">'
+        f'<h3 class="t-h3">{escape(title)}</h3>'
+        f'<p class="t-small panel__lead">{escape(lead)}</p>'
+        f'<div class="split">'
+        f'<div class="split__head"><div></div><div>Decides</div><div>Never does</div></div>'
+        f"{body}</div></div>"
+    )
+
+
+def flow_steps(steps: list[tuple[str, str]]) -> str:
+    """The monitor loop as a horizontal sequence."""
+    items = "".join(
+        f'<div class="flow__step"><span class="flow__n">{i}</span>'
+        f'<b>{escape(head)}</b><span>{escape(sub)}</span></div>'
+        for i, (head, sub) in enumerate(steps, 1)
+    )
+    return f'<div class="flow">{items}</div>'

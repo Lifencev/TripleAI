@@ -1,17 +1,23 @@
 """Loads the real triage dataset into a waiting-room cohort.
 
-Source: data/raw/triage_features_control.csv — one row per ED visit, with
-triage vitals, a `last_*` set of vitals, ESI level, arrival mode, chief
+Source: data/raw/triage_features_control.csv — one row per ED visit, carrying
+identity, timestamps, vitals at two timepoints, ESI level, arrival mode, chief
 complaints and comorbidity history.
 
-NEWS2 is computed here by src/news2.py from the raw vitals at both timepoints,
-never read from the dataset's precomputed columns — the number on screen always
-comes from our own engine. Triage -> last gives a genuine delta, which is what
-feeds the "rose by >= 2" rule.
+Where the two NEWS2 readings come from:
+
+    triage_time       -> triage_*  vitals -> "At triage" score
+    measurement_time  -> last_*    vitals -> "Latest" score
+
+Both are scored here by src/news2.py from the raw vitals, never read from the
+dataset's precomputed columns, so the number on screen always comes from our
+own engine. The gap between the two is a genuine observed change, and it is
+what feeds the "rose by >= 2" rule. It is two recorded observations, not a
+live feed — nothing recomputes between them.
 
 The dataset's own `last_news2` column is used only as a cheap pre-filter to
 find candidate rows before our engine scores them. Most ED visits are benign
-(60% score zero), so an unstratified sample produces a worklist of all zeroes.
+(around 55% score zero), so an unstratified sample gives a worklist of zeroes.
 """
 
 from pathlib import Path
@@ -21,12 +27,15 @@ import pandas as pd
 from news2 import news2
 
 _COLUMNS = [
-    "source_row_id", "esi_level", "age", "gender", "arrival_mode",
+    "patient_id", "stay_id", "esi_level", "age", "gender", "arrival_mode",
     "chief_complaints", "relevant_history", "alert",
+    "arrival_time", "triage_time", "measurement_time", "next_reassessment_due",
     "triage_hr", "triage_sbp", "triage_rr", "triage_spo2", "triage_on_oxygen", "triage_temp_c",
     "last_hr", "last_sbp", "last_rr", "last_spo2", "last_on_oxygen", "last_temp_c",
-    "last_news2", "disposition", "low_acuity_admitted_label",
+    "last_news2", "triage_news2", "disposition", "low_acuity_admitted_label",
 ]
+
+_TIME_COLUMNS = ["arrival_time", "triage_time", "measurement_time", "next_reassessment_due"]
 
 _VITALS = ["hr", "sbp", "rr", "spo2", "temp_c", "on_oxygen"]
 
@@ -95,18 +104,22 @@ def _score(row: pd.Series, prefix: str) -> dict:
     )
 
 
-# (label, predicate on the dataset's last_news2, relative weight)
+# (label, predicate on the eligible frame, relative weight)
 #
 # Deliberately bottom-heavy. A real waiting room is mostly fine, and the whole
 # point of the monitor is catching the few who are not — if half the worklist
-# is red, red stops meaning anything. Weights hold the mix at roughly two
+# is red, red stops meaning anything. Weights hold the mix at roughly three
 # alerting in twelve whatever size is requested.
+#
+# "rising" is drawn on the observed change rather than the absolute score: a
+# patient who went 1 -> 4 is exactly the under-triaged deterioration this tool
+# exists to surface, and without this stratum the delta rule never fires.
 _STRATA = [
-    ("critical", lambda s: s >= 7, 1),
-    ("high",     lambda s: (s >= 5) & (s < 7), 1),
-    ("watch",    lambda s: (s >= 3) & (s < 5), 2),
-    ("low",      lambda s: (s >= 1) & (s < 3), 4),
-    ("stable",   lambda s: s == 0, 4),
+    ("rising", lambda d: (d["last_news2"] - d["triage_news2"]) >= 2, 2),
+    ("high",   lambda d: d["last_news2"] >= 5, 1),
+    ("watch",  lambda d: (d["last_news2"] >= 3) & (d["last_news2"] < 5), 2),
+    ("low",    lambda d: (d["last_news2"] >= 1) & (d["last_news2"] < 3), 3),
+    ("stable", lambda d: d["last_news2"] == 0, 4),
 ]
 
 DATASET_DIRS = ("raw", "processed")
@@ -141,13 +154,19 @@ def _to_records(picked: pd.DataFrame) -> pd.DataFrame:
     last = picked.apply(lambda r: _score(r, "last"), axis=1)
 
     out = pd.DataFrame({
-        "ID": "PT-" + picked["source_row_id"].astype(int).astype(str).str.zfill(5),
+        # The dataset carries its own identity; do not fabricate one.
+        "ID": picked["patient_id"].astype(str),
+        "Stay": picked["stay_id"].astype(str),
         "Age": picked["age"].astype(int),
         "Sex": picked["gender"].fillna("Unknown"),
         "ESI": picked["esi_level"].astype(int),
         "Arrival": picked["arrival_mode"].fillna("Unknown").str.capitalize(),
         "Complaint": picked["chief_complaints"].map(_humanise),
         "History": picked["relevant_history"].map(_humanise),
+        "ArrivedAt": picked["arrival_time"],
+        "TriagedAt": picked["triage_time"],
+        "MeasuredAt": picked["measurement_time"],
+        "DueAt": picked["next_reassessment_due"],
         "NEWS2_Prev": [s["aggregate"] for s in triage],
         "NEWS2_Score": [s["aggregate"] for s in last],
         "Max_Single_Param": [s["max_single_param"] for s in last],
@@ -165,14 +184,23 @@ def _to_records(picked: pd.DataFrame) -> pd.DataFrame:
     out["Delta"] = out["NEWS2_Score"] - out["NEWS2_Prev"]
     out["Complaint"] = out["Complaint"].replace("", "Not recorded")
     out["History"] = out["History"].replace("", "None recorded")
+
+    # Minutes between the two scored observations — the span the delta covers.
+    gap = (out["MeasuredAt"] - out["TriagedAt"]).dt.total_seconds() / 60
+    out["ObsGapMin"] = gap.fillna(0).round().astype(int)
+    out["WaitMin"] = (
+        (out["MeasuredAt"] - out["ArrivedAt"]).dt.total_seconds() / 60
+    ).fillna(0).round().astype(int)
     return out
 
 
 def _eligible(scan_rows: int) -> pd.DataFrame:
     """Rows with a complete second set of vitals — the only monitorable ones."""
-    df = pd.read_csv(dataset_path(), usecols=_COLUMNS, nrows=scan_rows)
+    df = pd.read_csv(
+        dataset_path(), usecols=_COLUMNS, nrows=scan_rows, parse_dates=_TIME_COLUMNS
+    )
     needed = [f"{p}_{c}" for p in ("triage", "last") for c in _VITALS] + [
-        "esi_level", "alert", "last_news2",
+        "esi_level", "alert", "last_news2", "triage_news2",
     ]
     df = df.dropna(subset=needed)
     if df.empty:
@@ -192,11 +220,16 @@ def load_pool(size: int = 60, scan_rows: int = 250_000, seed: int = 11) -> pd.Da
 
     total_weight = sum(w for _, _, w in _STRATA)
     picked = []
+    used = set()
     for _, predicate, weight in _STRATA:
         n = max(1, round(size * weight / total_weight))
-        stratum = df[predicate(df["last_news2"])]
+        # Strata overlap (a rising patient may also be high), so exclude rows
+        # already taken rather than showing the same visit twice.
+        stratum = df[predicate(df) & ~df.index.isin(used)]
         if len(stratum):
-            picked.append(stratum.sample(min(len(stratum), n), random_state=seed))
+            chosen = stratum.sample(min(len(stratum), n), random_state=seed)
+            used.update(chosen.index)
+            picked.append(chosen)
     picked = pd.concat(picked)
 
     if len(picked) < size:  # top up if a stratum was short

@@ -25,16 +25,20 @@ from theme import current_mode, inject_theme, toggle_mode
 from time_interval import next_eval_interval
 from ui import (
     alert_card,
+    card,
     detail_grid,
     figure,
+    flow_steps,
     icon,
-    metric_strip,
     page_header,
     patient_header,
     queue_row,
+    rule_list,
+    score_trend,
     section,
+    split_panel,
     stat,
-    vitals_row,
+    vitals_table,
 )
 
 load_dotenv()
@@ -49,6 +53,14 @@ st.set_page_config(
 )
 
 MD = dict(unsafe_allow_html=True)
+
+def _clock(ts) -> str:
+    """Wall-clock time of a recorded observation, for provenance lines."""
+    try:
+        return pd.Timestamp(ts).strftime("%H:%M")
+    except (ValueError, TypeError):
+        return "unknown"
+
 
 # NEWS2 thresholds per parameter, used only to flag a vital in the UI.
 _ABNORMAL = {
@@ -279,36 +291,39 @@ if st.session_state.view == "focus":
             )
 
             st.markdown(
-                metric_strip([
-                    ("NEWS2 now", patient["NEWS2_Score"],
-                     b["key"] if b["key"] in ("watch", "escalate") else None),
-                    ("At triage", patient["NEWS2_Prev"], None),
-                    ("Worst parameter", patient["Max_Single_Param"],
-                     "escalate" if patient["Max_Single_Param"] == 3 else None),
-                    ("Recheck in", f"{interval['interval_min']}m", None),
-                ]),
+                score_trend(
+                    prev=int(patient["NEWS2_Prev"]),
+                    now=int(patient["NEWS2_Score"]),
+                    delta=int(patient["Delta"]),
+                    prev_at=_clock(patient["TriagedAt"]),
+                    now_at=_clock(patient["MeasuredAt"]),
+                    gap_min=int(patient["ObsGapMin"]),
+                    worst_param=int(patient["Max_Single_Param"]),
+                    recheck=f"{interval['interval_min']} min",
+                ),
                 **MD,
             )
 
             st.markdown(
-                vitals_row([
+                vitals_table([
                     ("Resp", patient["RR"], _ABNORMAL["RR"](patient["RR"])),
                     ("SpO2", f"{patient['SpO2']}%", _ABNORMAL["SpO2"](patient["SpO2"])),
                     ("O2", "Yes" if patient["O2_supp"] else "No", bool(patient["O2_supp"])),
                     ("Systolic", patient["SBP"], _ABNORMAL["SBP"](patient["SBP"])),
                     ("Pulse", patient["HR"], _ABNORMAL["HR"](patient["HR"])),
-                    ("Temp", f"{patient['Temp']}°", _ABNORMAL["Temp"](patient["Temp"])),
+                    ("Temp", f"{patient['Temp']}", _ABNORMAL["Temp"](patient["Temp"])),
                 ]),
                 **MD,
             )
 
+            st.markdown('<div class="action-row"></div>', **MD)
             c1, c2 = st.columns([1, 1])
             with c1:
                 if st.button("Generate focus note", type="primary", width="stretch"):
                     with st.spinner("Gemma is phrasing the alert…"):
                         st.session_state.notes[patient["ID"]] = generate_focus_note(patient)
             with c2:
-                if st.button("Acknowledge and clear", width="stretch"):
+                if st.button("Acknowledge", width="stretch"):
                     st.session_state.queue = q[q["ID"] != patient["ID"]].reset_index(drop=True)
                     st.session_state.selected = None
                     st.rerun()
@@ -408,53 +423,71 @@ elif st.session_state.view == "queue":
         )
 
 
-# --- View: rules ------------------------------------------------------------
+# --- View: method -----------------------------------------------------------
 
 else:
     st.markdown(
-        page_header("Method", "Deterministic, and visibly so",
-                    "An LLM never decides who escalates."),
+        page_header("Method", "The rules decide, Gemma explains",
+                    "An LLM never chooses who escalates."),
         **MD,
     )
 
-    a, b_ = st.columns(2, gap="large")
-    with a:
+    st.markdown(
+        flow_steps([
+            ("Triage", "Vitals recorded, NEWS2 scored, first interval set"),
+            ("Wait", "Patient sits in the waiting room, not yet seen"),
+            ("Re-score", "New vitals or the interval elapsing recomputes NEWS2"),
+            ("Evaluate", "Three rules decide whether this becomes an alert"),
+            ("Explain", "Gemma phrases why, in one line a nurse reads in seconds"),
+        ]),
+        **MD,
+    )
+
+    left, right = st.columns([1, 1], gap="large")
+    with left:
         st.markdown(
-            '<div class="card"><h3 class="t-h3">The rules decide</h3>'
-            '<p class="t-body" style="margin-top:12px">An alert fires if <b>any</b> of:</p>'
-            '<p class="t-body">NEWS2 aggregate reaches 5<br>'
-            "Any single parameter scores 3<br>"
-            "NEWS2 rose by 2 or more since the last check</p>"
-            '<p class="t-body" style="margin-top:12px">The interval is the '
-            "<b>stricter</b> of the NEWS2 band and the ESI floor, so neither "
-            "rulebook can silently override the other.</p></div>",
+            rule_list(
+                "An alert fires if any of these is true",
+                "Checked on every re-score. No weighting, no model, no discretion.",
+                [
+                    ("NEWS2 aggregate reaches 5",
+                     "The standard escalation threshold for the combined score"),
+                    ("Any single parameter scores 3",
+                     "One severely abnormal vital escalates on its own, whatever the total"),
+                    ("NEWS2 rose by 2 or more",
+                     "Catches the patient still inside a safe band but moving the wrong way"),
+                ],
+            ),
             **MD,
         )
-    with b_:
+    with right:
         st.markdown(
-            '<div class="card"><h3 class="t-h3">Gemma explains</h3>'
-            '<p class="t-body" style="margin-top:12px">Gemma writes the intake focus '
-            "note and the one-line alert explanation. It never selects who escalates, "
-            "never sets an interval, and never assigns acuity.</p>"
-            '<p class="t-body" style="margin-top:12px">Red in this interface means a '
-            "deterministic rule fired. It is never a brand colour and never a model "
-            "opinion.</p></div>",
+            split_panel(
+                "Who is allowed to decide what",
+                "This split is the reason the output can be trusted.",
+                [
+                    ("Rules", "Who escalates, and when the next check is due",
+                     "Never phrase or interpret"),
+                    ("Gemma", "Wording of the focus note and the alert line",
+                     "Never sets acuity, interval or priority"),
+                ],
+            ),
             **MD,
         )
 
-    st.markdown(section("Known approximations", "Named, not hidden."), **MD)
+    st.markdown(section("How the interval is chosen"), **MD)
     st.markdown(
-        '<div class="card"><p class="t-body">'
-        "<b>Consciousness.</b> The dataset has no ACVPU field, so it is proxied from the "
-        "altered-mental-status, confusion, lethargy and unresponsive complaint flags. "
-        "This under-detects subtle confusion.</p>"
-        '<p class="t-body" style="margin-top:14px"><b>ESI intervals.</b> Unlike CTAS, ESI '
-        "publishes no official reassessment intervals. Our map is an acuity-ordered "
-        "approximation, strongest for levels 1 to 3.</p>"
-        '<p class="t-body" style="margin-top:14px"><b>NEWS2 Scale 2.</b> No flag identifies '
-        "chronic hypercapnic patients, so Scale 1 is used throughout.</p>"
-        '<p class="t-body" style="margin-top:14px"><b>Trajectory.</b> Patients are real ED '
-        "visits. The dataset holds a triage reading and a later reading per visit, which "
-        "is what produces the NEWS2 delta. It is not a continuous stream.</p></div>",
+        card(
+            '<p class="t-body">Two rulebooks propose a reassessment interval, and the '
+            "<b>stricter</b> one wins, so neither can silently override the other.</p>"
+            '<div class="interval-demo">'
+            '<div class="interval-demo__side"><span>NEWS2 band says</span><b>240 min</b></div>'
+            '<div class="interval-demo__op">take the sooner</div>'
+            '<div class="interval-demo__side"><span>ESI floor says</span><b>15 min</b></div>'
+            '<div class="interval-demo__eq">&rarr;</div>'
+            '<div class="interval-demo__out"><span>Recheck in</span><b>15 min</b></div>'
+            "</div>",
+            extra="panel",
+        ),
         **MD,
     )
