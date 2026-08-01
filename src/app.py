@@ -5,7 +5,7 @@ import os
 import json
 from dotenv import load_dotenv
 
-# Імпортуємо ваші модулі
+# Import custom project modules
 from news2 import news2
 from time_interval import next_eval_interval
 from prompts import SYSTEM_PROMPT
@@ -17,12 +17,12 @@ API_URL = "https://ai.spuric.com/v1/chat/completions"
 
 st.set_page_config(page_title="Triage Re-Evaluation Copilot", page_icon="🏥", layout="wide")
 
-# Шлях до вашого CSV файлу (змініть назву, якщо потрібно)
+# Path to the intake CSV file
 CSV_FILE_PATH = "./data/processed/triage_features_control.csv" 
 
 # --- Core Logic ---
 def calculate_patient_metrics(row):
-    """Раховує NEWS2 та інтервал перевірки для окремого рядка пацієнта з CSV."""
+    """Computes NEWS2 and re-evaluation interval for an individual patient row from CSV."""
     rr = row.get('triage_rr', row.get('RR', 16))
     spo2 = row.get('triage_spo2', row.get('Saturation', 98))
     o2 = row.get('triage_on_oxygen', row.get('O2_supp', False))
@@ -31,12 +31,12 @@ def calculate_patient_metrics(row):
     temp = row.get('triage_temp_c', row.get('Temp', 36.6))
     alert = row.get('alert', True)
     
-    # 1. Раховуємо NEWS2
+    # 1. Calculate NEWS2 score components
     news2_res = news2(rr, spo2, o2, sbp, hr, temp, alert)
     score = news2_res['aggregate']
     max_param = news2_res['max_single_param']
     
-    # 2. Раховуємо інтервал через time_interval.py
+    # 2. Calculate mandatory re-evaluation interval via time_interval.py
     esi = int(row.get('esi_level', 3))
     interval_data = next_eval_interval(score, max_param, esi)
     
@@ -49,28 +49,28 @@ def calculate_patient_metrics(row):
 
 def insert_patient_into_queue(queue_df, new_patient_row):
     """
-    Додає нового пацієнта до існуючої черги і сортує її 
-    за пріоритетом (найвищий NEWS2, за ним — найкоротший інтервал).
+    Appends a new patient to the existing queue and sorts it by priority 
+    (highest NEWS2 score first, followed by the shortest re-evaluation interval).
     """
-    # Рахуємо метрики для нового пацієнта
+    # Calculate metrics for the incoming patient
     metrics = calculate_patient_metrics(new_patient_row)
     
-    # Об'єднуємо дані рядка з розрахованими метриками
+    # Combine row data with the calculated clinical metrics
     patient_dict = new_patient_row.to_dict()
     patient_dict.update(metrics)
     
-    # Додаємо до поточного DataFrame черги
+    # Append to the current queue dataframe
     new_row_df = pd.DataFrame([patient_dict])
     updated_queue = pd.concat([queue_df, new_row_df], ignore_index=True)
     
-    # Сортуємо чергу згідно з правилами (високий бал та короткий інтервал йдуть нагору)
+    # Sort queue according to clinical acuity rules
     return updated_queue.sort_values(
         by=['NEWS2_Score', 'Reeval_Interval_Min'], 
         ascending=[False, True]
     ).reset_index(drop=True)
 
 def generate_focus_note(patient_row):
-    """Формує JSON та викликає Gemma API згідно з prompts.py (безпечно обробляє NaN)."""
+    """Constructs the JSON payload and calls the Gemma API safely handling NaN values."""
     history = []
     for col in ['Chief_complain', 'chief_complaints', 'relevant_history']:
         if col in patient_row and pd.notna(patient_row[col]):
@@ -80,7 +80,7 @@ def generate_focus_note(patient_row):
     if not history:
         history = ["No specific history provided"]
 
-    # Безпечне отримання початкових та гірших показників (з перевіркою на NaN)
+    # Safe extraction of initial and worst clinical vitals with NaN checks
     hr_triage = patient_row.get('triage_hr', patient_row.get('HR', 0))
     if pd.isna(hr_triage): hr_triage = 0
     
@@ -107,19 +107,27 @@ def generate_focus_note(patient_row):
     if spo2_worst < spo2_triage:
         drivers.append({"param": "SpO2", "from": int(spo2_triage), "to": int(spo2_worst)})
     
-    # Якщо пацієнт стабільний і драйверів немає, додаємо базовий статус для промпту
     if not drivers:
         drivers.append({"param": "vitals stable", "from": int(hr_triage), "to": int(hr_triage)})
 
-    prev_score = int(patient_row.get('triage_news2', patient_row.get('NEWS2_Score', 0)))
-    if pd.isna(prev_score): prev_score = 0
+    # Safe calculation of NEWS2 scores with NaN handling
+    prev_score = patient_row.get('triage_news2', 0)
+    if pd.isna(prev_score): 
+        prev_score = 0
+    else: 
+        prev_score = int(prev_score)
     
-    now_score = int(patient_row.get('worst_news2', prev_score))
-    if pd.isna(now_score): now_score = prev_score
+    now_score = patient_row.get('worst_news2', prev_score)
+    if pd.isna(now_score): 
+        now_score = prev_score
+    else: 
+        now_score = int(now_score)
     
     interval_min = patient_row.get('Reeval_Interval_Min', 60)
+    if pd.isna(interval_min): interval_min = 60
+    
     driver = patient_row.get('Interval_Driver', 'NEWS2')
-    interval_status_str = f"reassessment required within {interval_min} min, governed by {driver}"
+    interval_status_str = f"reassessment required within {int(interval_min)} min, governed by {driver}"
 
     patient_json_data = {
         "patient": str(patient_row.get('Name', f"Patient {patient_row.get('source_row_id', 'Unknown')}")),
@@ -143,16 +151,16 @@ def generate_focus_note(patient_row):
         return f"System Alert: Check patient vitals immediately. Error: {e}"
 
 def highlight_critical_patients(row):
-    """CSS підсвічування для критичних пацієнтів у таблиці."""
+    """CSS background styling for critical patients in the queue table."""
     if row['NEWS2_Score'] >= 5 or row.get('Max_Single_Param', 0) == 3:
         return ['background-color: rgba(255, 75, 75, 0.3)'] * len(row)
     return [''] * len(row)
 
 # --- Session State Initialization ---
 if "queue" not in st.session_state:
-    st.session_state.queue = pd.DataFrame() # Початково черга порожня!
+    st.session_state.queue = pd.DataFrame() # Initialize queue as empty
 if "csv_index" not in st.session_state:
-    st.session_state.csv_index = 0          # Вказівник на поточний рядок у CSV
+    st.session_state.csv_index = 0          # Pointer to track current row in CSV
 if "note_patient_id" not in st.session_state:
     st.session_state.note_patient_id = None
 if "note_patient_score" not in st.session_state:
@@ -170,23 +178,20 @@ tab_focus, tab_macro = st.tabs(["🩺 Next Action Required", "📋 Risk-Ranked Q
 with tab_focus:
     st.header("Immediate Triage Action")
     
-    # Кнопка для завантаження наступного пацієнта з CSV файлу
+    # Button to fetch the next sequential patient from the CSV intake file
     if st.button("📥 Fetch Next Patient from Intake", type="primary"):
         try:
-            # Читаємо файл послідовно по одному рядку за допомогою skiprows та nrows
             df_chunk = pd.read_csv(CSV_FILE_PATH, skiprows=range(1, st.session_state.csv_index + 1), nrows=1)
             
             if not df_chunk.empty:
                 new_patient = df_chunk.iloc[0]
-                # Додаємо пацієнта в чергу з урахуванням його інтервалу та сортування
                 st.session_state.queue = insert_patient_into_queue(st.session_state.queue, new_patient)
-                # Збільшуємо індекс для наступного натискання
                 st.session_state.csv_index += 1
                 st.rerun()
             else:
                 st.warning("No more patients left in the intake CSV file.")
         except Exception as e:
-            st.error(f"Error reading CSV file: {e}. Ensure '{CSV_FILE_PATH}' is in the project folder.")
+            st.error(f"Error reading CSV file: {e}. Ensure '{CSV_FILE_PATH}' exists in the project path.")
 
     st.divider()
 
@@ -195,7 +200,7 @@ with tab_focus:
         
         st.error(f"**Re-evaluate immediately:** Patient ID {top_patient.get('source_row_id', 'Unknown')} (NEWS2: {top_patient['NEWS2_Score']}, Interval: {top_patient['Reeval_Interval_Min']}m)")
         
-        # Автоматична генерація нотатки для нового лідера черги
+        # Automatically generate a focus note for the new queue leader
         patient_unique_key = f"{top_patient.get('source_row_id', 0)}_{top_patient['NEWS2_Score']}"
         if st.session_state.note_patient_id != patient_unique_key:
             with st.spinner("Gemma is synthesizing context..."):
