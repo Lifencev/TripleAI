@@ -6,30 +6,16 @@ venv/
 # Secrets
 .env
 
-# Datasets
+# Datasets — large intake CSVs stay out of version control
 data/raw/
 data/processed/
-
-# Cache
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-EOT
-# Environments
-venv/
-.venv/
-.vscode/
-
-# Secrets
-.env
-
-# Datasets
-data/raw/
-data/processed/
-
-# Cache
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-EOTdf.csv
+df.csv
 data/df.csv
+
+# Cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store

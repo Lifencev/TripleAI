@@ -1,0 +1,590 @@
+/* ==========================================================================
+   Triage Re-Evaluation Monitor — design tokens
+   Light is the primary theme; dark is a full counterpart for night shift.
+
+   Colour discipline (the rule that keeps the product honest):
+     BLUE  is the brand. Chrome, nav, focus, links, "stable".
+     AMBER is "watch"    — rising, not yet alerting.
+     RED   is "escalate" — reserved exclusively for the alert state.
+   Red never appears on a logo, a button, or a heading, and never fills a
+   whole card. It marks the numeral, the left rail, and the one alert block.
+
+   Surfaces are separated by tone, not by borders. There is no card outline.
+   ========================================================================== */
+
+:root,
+[data-theme="light"] {
+  --canvas:        #eeeff1;
+  --surface:       #ffffff;
+  --surface-2:     #f6f7f8;
+  --surface-sunk:  #e7e9ec;
+  --rail:          #ffffff;
+
+  --ink:           #0a0c10;
+  --ink-2:         #4a4f57;
+  --ink-muted:     #8b9099;
+
+  --line:          rgba(10, 12, 16, 0.07);
+  --shadow-card:   0 1px 2px rgba(16, 20, 28, 0.04), 0 8px 24px rgba(16, 20, 28, 0.05);
+  --shadow-rail:   0 4px 30px rgba(16, 20, 28, 0.06);
+
+  --accent:        #0169ff;
+  --accent-ink:    #ffffff;
+  --accent-soft:   rgba(1, 105, 255, 0.09);
+
+  --sev-stable:    #0169ff;
+  --sev-routine:   #a8adb6;
+  --sev-watch:     #e39a2e;
+  --sev-escalate:  #c63032;
+
+  --sev-stable-soft:   rgba(1, 105, 255, 0.09);
+  --sev-routine-soft:  rgba(139, 144, 153, 0.12);
+  --sev-watch-soft:    rgba(227, 154, 46, 0.11);
+  --sev-escalate-soft: rgba(198, 48, 50, 0.07);
+
+  --body-fill:     rgba(10, 12, 16, 0.035);
+  --body-line:     rgba(10, 12, 16, 0.22);
+  --zone-idle:     rgba(10, 12, 16, 0.10);
+}
+
+[data-theme="dark"] {
+  --canvas:        #0a0b0d;
+  --surface:       #16181c;
+  --surface-2:     #1d2025;
+  --surface-sunk:  #101215;
+  --rail:          #131518;
+
+  --ink:           #ffffff;
+  --ink-2:         #c7ccd4;
+  --ink-muted:     #838a95;
+
+  --line:          rgba(255, 255, 255, 0.08);
+  --shadow-card:   none;
+  --shadow-rail:   none;
+
+  /* Accent and alert are LIFTED on the dark canvas: #0169ff and #c63032 both
+     fall below 4.5:1 against near-black at body size. These pass. */
+  --accent:        #4a90ff;
+  --accent-ink:    #00122e;
+  --accent-soft:   rgba(74, 144, 255, 0.14);
+
+  --sev-stable:    #4a90ff;
+  --sev-routine:   #6b7280;
+  --sev-watch:     #f0b454;
+  --sev-escalate:  #f0555a;
+
+  --sev-stable-soft:   rgba(74, 144, 255, 0.14);
+  --sev-routine-soft:  rgba(139, 144, 153, 0.14);
+  --sev-watch-soft:    rgba(240, 180, 84, 0.13);
+  --sev-escalate-soft: rgba(240, 85, 90, 0.11);
+
+  --body-fill:     rgba(255, 255, 255, 0.045);
+  --body-line:     rgba(255, 255, 255, 0.26);
+  --zone-idle:     rgba(255, 255, 255, 0.10);
+}
+
+:root {
+  --font: "Urbanist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --t-display: 46px;
+  --t-h1:      34px;
+  --t-h2:      24px;
+  --t-h3:      19px;
+  --t-body:    17px;
+  --t-small:   14px;
+  --t-label:   11px;
+  --t-metric:  42px;
+
+  --lh-head:   1.36;
+  --lh-body:   1.55;
+
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 44px; --s-9: 64px;
+
+  --r-tile: 14px;
+  --r-card: 22px;
+  --r-pill: 999px;
+
+  --rail-w: 76px;
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+html, body, [class*="st-"], .stApp, button, input, textarea, select {
+  font-family: var(--font);
+}
+
+/* ...but never the icon font. Streamlit renders Material Symbols as text
+   ligatures; overriding their family leaks raw names like
+   "keyboard_double_arrow_left" into the chrome. */
+[data-testid="stIconMaterial"],
+span[class*="material-symbols"],
+.material-icons {
+  font-family: "Material Symbols Rounded", "Material Symbols Outlined",
+               "Material Icons" !important;
+}
+
+.stApp { background: var(--canvas); color: var(--ink); }
+.stApp a { color: var(--accent); }
+
+#MainMenu, footer, header[data-testid="stHeader"] { display: none; }
+
+.block-container {
+  padding: var(--s-8) var(--s-8) var(--s-9);
+  max-width: 1560px;
+}
+
+[data-testid="stVerticalBlock"]   { gap: var(--s-5); }
+[data-testid="stHorizontalBlock"] { gap: var(--s-5); }
+
+/* ==========================================================================
+   Typography
+   ========================================================================== */
+
+.t-eyebrow {
+  font-size: var(--t-label);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0 0 var(--s-3);
+}
+
+.t-display {
+  font-size: var(--t-display);
+  line-height: 1.18;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  margin: 0;
+  color: var(--ink);
+}
+
+.t-h1 { font-size: var(--t-h1); line-height: 1.2;  font-weight: 500; letter-spacing: -0.02em; margin: 0; color: var(--ink); }
+.t-h2 { font-size: var(--t-h2); line-height: var(--lh-head); font-weight: 500; letter-spacing: -0.01em; margin: 0; color: var(--ink); }
+.t-h3 { font-size: var(--t-h3); line-height: var(--lh-head); font-weight: 600; margin: 0; color: var(--ink); }
+
+/* Streamlit ships heading colours that out-specify a bare class, which
+   strands headings on the light palette in dark mode. Re-assert. */
+.stApp h1.t-display, .stApp h2.t-h1, .stApp h2.t-h2, .stApp h3.t-h3 { color: var(--ink); }
+
+.t-body  { font-size: var(--t-body);  line-height: var(--lh-body); color: var(--ink-2); margin: 0; }
+.t-small { font-size: var(--t-small); line-height: var(--lh-body); color: var(--ink-muted); margin: 0; }
+
+.page-header { margin: 0 0 var(--s-7); }
+.page-header__sub { margin-top: var(--s-3); color: var(--ink-muted); }
+.section { margin: var(--s-6) 0 var(--s-2); }
+.section__sub { margin-top: var(--s-1); }
+
+/* ==========================================================================
+   Card — surfaces separate by tone, never by outline
+   ========================================================================== */
+
+.card {
+  background: var(--surface);
+  border-radius: var(--r-card);
+  padding: var(--s-6);
+  box-shadow: var(--shadow-card);
+}
+.card--plain { box-shadow: none; background: transparent; padding: 0; }
+
+/* ==========================================================================
+   Stat tile — one number, and the numeral alone carries severity
+   ========================================================================== */
+
+.stat {
+  background: var(--surface);
+  border-radius: var(--r-card);
+  padding: var(--s-5) var(--s-6);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-height: 132px;
+}
+
+.stat__head { display: flex; align-items: center; gap: var(--s-2); color: var(--ink-muted); }
+.stat__icon { display: inline-flex; }
+.stat__label { font-size: var(--t-small); font-weight: 500; line-height: 1.25; }
+
+.stat__value {
+  font-size: var(--t-metric);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  margin-top: auto;
+}
+
+.stat__foot {
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.stat--watch    .stat__value { color: var(--sev-watch); }
+.stat--escalate .stat__value { color: var(--sev-escalate); }
+
+/* ==========================================================================
+   Compact metric strip — secondary numbers that must not dominate
+   ========================================================================== */
+
+.metric-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  background: var(--surface);
+  border-radius: var(--r-card);
+  padding: var(--s-3);
+  box-shadow: var(--shadow-card);
+}
+
+.metric {
+  flex: 1 1 0;
+  min-width: 108px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-tile);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.metric__label {
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.metric__value {
+  font-size: var(--t-h2);
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.metric--watch    .metric__value { color: var(--sev-watch); }
+.metric--escalate .metric__value { color: var(--sev-escalate); }
+
+/* ==========================================================================
+   Detail grid & vitals — labelled facts, never middot runs
+   ========================================================================== */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s-5) var(--s-6);
+}
+.detail { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.detail--wide { grid-column: 1 / -1; }
+.detail__label {
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.detail__value { font-size: var(--t-body); color: var(--ink); line-height: 1.35; }
+
+.vitals { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.vital {
+  flex: 1 1 0;
+  min-width: 92px;
+  padding: var(--s-3);
+  border-radius: var(--r-tile);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vital__label {
+  font-size: var(--t-label);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.vital__value { font-size: var(--t-h3); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); }
+.vital--flag .vital__value { color: var(--sev-escalate); }
+.vital--flag .vital__label { color: var(--sev-escalate); opacity: 0.8; }
+
+/* ==========================================================================
+   Severity pill
+   ========================================================================== */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 13px;
+  border-radius: var(--r-pill);
+  font-size: var(--t-label);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.pill::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.pill--stable   { color: var(--sev-stable);   background: var(--sev-stable-soft); }
+.pill--routine  { color: var(--ink-muted);    background: var(--sev-routine-soft); }
+.pill--watch    { color: var(--sev-watch);    background: var(--sev-watch-soft); }
+.pill--escalate { color: var(--sev-escalate); background: var(--sev-escalate-soft); }
+
+/* Only the escalate state animates. Motion is a signal, not decoration. */
+.pill--escalate::before { animation: pulse 1.8s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.75); }
+}
+@keyframes zoneflash {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill--escalate::before, .zone--escalate { animation: none; }
+}
+
+.delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-label);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--sev-routine-soft);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.delta--up   { background: var(--sev-escalate-soft); color: var(--sev-escalate); }
+.delta--down { background: var(--sev-stable-soft);   color: var(--sev-stable); }
+
+/* ==========================================================================
+   Queue — only escalating rows tint. Everything else stays quiet.
+   ========================================================================== */
+
+.qrow {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 76px auto 96px;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  background: var(--surface);
+  border-radius: var(--r-tile);
+  box-shadow: var(--shadow-card);
+  border-left: 3px solid transparent;
+}
+/* Severity lives in the rail and the numeral. No row fills with colour —
+   a wall of pink rows makes the alerting ones invisible. */
+.qrow--stable   { border-left-color: var(--sev-stable); }
+.qrow--routine  { border-left-color: var(--sev-routine); }
+.qrow--watch    { border-left-color: var(--sev-watch); }
+.qrow--escalate { border-left-color: var(--sev-escalate); border-left-width: 4px; }
+.qrow--selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.qrow__rank { font-size: var(--t-small); font-weight: 600; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.qrow__who  { min-width: 0; }
+.qrow__name { font-size: var(--t-body); font-weight: 600; color: var(--ink); line-height: 1.25; }
+.qrow__cc   { font-size: var(--t-small); color: var(--ink-2); line-height: 1.35; margin-top: 1px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow__meta { display: flex; gap: var(--s-4); flex-wrap: wrap; font-size: var(--t-small);
+              color: var(--ink-muted); margin-top: 3px; }
+
+.qrow__news { text-align: left; }
+.qrow__news-val { font-size: var(--t-h2); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink); line-height: 1; }
+.qrow__news small { display: block; font-size: var(--t-label); font-weight: 600; letter-spacing: 0.1em; color: var(--ink-muted); margin-top: 3px; }
+.qrow--escalate .qrow__news-val { color: var(--sev-escalate); }
+.qrow--watch    .qrow__news-val { color: var(--sev-watch); }
+
+.qrow__due { font-size: var(--t-small); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
+.qrow__due span { display: block; font-size: var(--t-label); font-weight: 600; color: var(--ink-muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.qrow--escalate .qrow__due { color: var(--sev-escalate); }
+
+/* ==========================================================================
+   Alert card
+   ========================================================================== */
+
+.alert {
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  padding: var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  border-left: 3px solid var(--sev-escalate);
+}
+.alert--calm { border-left-color: var(--sev-stable); }
+
+.alert__top { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.alert__why { font-size: var(--t-h3); line-height: 1.5; font-weight: 500; color: var(--ink); margin: 0; }
+
+.alert__rule {
+  display: flex; align-items: baseline; gap: var(--s-3); flex-wrap: wrap;
+  font-size: var(--t-small); color: var(--ink-muted);
+  padding-top: var(--s-4); border-top: 1px solid var(--line);
+}
+.alert__rule-label { font-size: var(--t-label); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.alert__codes { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.alert__codes code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: var(--ink-2);
+}
+.alert__foot { margin: 0; }
+
+.ai-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-muted);
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  padding: 4px 11px;
+}
+
+/* ==========================================================================
+   Anatomy figure
+   ========================================================================== */
+
+.figure { display: flex; flex-direction: column; gap: var(--s-5); align-items: center; }
+.figure__svg { width: 100%; max-width: 250px; height: auto; display: block; }
+.figure__none { text-align: center; }
+.zone--escalate { animation: zoneflash 2.2s ease-in-out infinite; }
+
+.zones { display: flex; flex-direction: column; gap: var(--s-2); width: 100%; }
+.zones__row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px var(--s-4);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: var(--t-small);
+}
+.zones__row--watch    { background: var(--sev-watch-soft); }
+.zones__row--escalate { background: var(--sev-escalate-soft); }
+.zones__organ { font-weight: 600; color: var(--ink); }
+.zones__src   { color: var(--ink-muted); font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; }
+.zones__score { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
+.zones__row--escalate .zones__score { color: var(--sev-escalate); }
+.zones__row--watch    .zones__score { color: var(--sev-watch); }
+
+/* ==========================================================================
+   The icon rail (Streamlit sidebar)
+   ========================================================================== */
+
+[data-testid="stSidebar"] {
+  background: var(--rail);
+  border-right: none;
+  box-shadow: var(--shadow-rail);
+  width: var(--rail-w) !important;
+  min-width: var(--rail-w) !important;
+}
+[data-testid="stSidebar"] > div { width: var(--rail-w) !important; min-width: var(--rail-w) !important; }
+[data-testid="stSidebar"] .block-container,
+[data-testid="stSidebarUserContent"] { padding: var(--s-5) 0 var(--s-5); }
+[data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] { gap: var(--s-2); align-items: center; }
+[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"] { display: none; }
+
+.rail-logo {
+  width: 42px; height: 42px;
+  margin: 0 auto var(--s-5);
+  border-radius: 13px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  display: grid; place-items: center;
+}
+.rail-rule { width: 26px; height: 1px; background: var(--line); margin: var(--s-3) auto; }
+
+/* Rail buttons: square, icon-only. The label is kept for screen readers and
+   the tooltip, and hidden visually. */
+[data-testid="stSidebar"] .stButton { width: 100%; display: flex; justify-content: center; }
+[data-testid="stSidebar"] .stButton button {
+  width: 46px; height: 46px;
+  min-height: 46px;
+  padding: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--ink-muted);
+  box-shadow: none;
+  display: grid;
+  place-items: center;
+}
+[data-testid="stSidebar"] .stButton button p { display: none; }
+[data-testid="stSidebar"] .stButton button [data-testid="stIconMaterial"] { font-size: 21px; margin: 0; }
+[data-testid="stSidebar"] .stButton button:hover { background: var(--surface-2); color: var(--ink); }
+[data-testid="stSidebar"] .stButton button[kind="primary"],
+[data-testid="stSidebar"] .stButton button[data-testid="stBaseButton-primary"] {
+  background: var(--accent); color: var(--accent-ink);
+}
+
+/* ==========================================================================
+   Streamlit control restyling
+   ========================================================================== */
+
+/* Descendant, not child: a button with help= is wrapped in a tooltip target,
+   which pushes it out of direct-child range. */
+.stButton button {
+  font-family: var(--font);
+  font-size: var(--t-small);
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  padding: 10px var(--s-5);
+  border: none;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.stButton button:hover { background: var(--accent-soft); color: var(--accent); }
+.stButton button p { color: inherit; font-weight: 600; }
+.stButton button[kind="primary"],
+.stButton button[data-testid="stBaseButton-primary"] {
+  background: var(--accent); color: var(--accent-ink);
+}
+.stButton button[kind="primary"]:hover,
+.stButton button[data-testid="stBaseButton-primary"]:hover {
+  background: var(--accent); filter: brightness(1.08); color: var(--accent-ink);
+}
+
+/* Row-open chevrons in the queue. Targeted by Streamlit's st-key-<key> class:
+   a wrapping <div> emitted via st.markdown does NOT contain the widget in the
+   DOM, so descendant selectors from a hand-rolled wrapper never match. */
+[class*="st-key-open_"] button {
+  width: 38px; height: 38px; min-height: 38px;
+  padding: 0; border-radius: 50%;
+  background: transparent; box-shadow: none;
+  color: var(--ink-muted);
+}
+[class*="st-key-open_"] button:hover { background: var(--accent-soft); color: var(--accent); }
+[class*="st-key-open_"] button p { display: none; }
+
+.stSelectbox div[data-baseweb="select"] > div,
+.stTextInput input {
+  background: var(--surface);
+  border: none;
+  box-shadow: var(--shadow-card);
+  border-radius: var(--r-pill);
+  color: var(--ink);
+  font-family: var(--font);
+}
+
+[data-testid="stDataFrame"] { border-radius: var(--r-card); overflow: hidden; }
+[data-testid="stWidgetLabel"] p { font-size: var(--t-small); color: var(--ink-muted); }
+hr, [data-testid="stDivider"] hr { border-color: var(--line); }

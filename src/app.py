@@ -1,242 +1,460 @@
-import streamlit as st
+"""Triage Re-Evaluation Monitor.
+
+Design system: src/theme (tokens) and src/ui (markup).
+Deterministic engine: src/news2.py, src/time_interval.py, src/severity.py.
+Cohort: real ED visits from data/raw/triage_features_control.csv (src/data.py).
+
+Gemma is called for language only — it phrases an alert the rules already
+raised. It never assigns a band, an interval, or a priority.
+"""
+
+import json
+import os
+import random
+
 import pandas as pd
 import requests
-import os
-import json
+import streamlit as st
 from dotenv import load_dotenv
 
-# Import custom project modules
+from data import load_pool
 from news2 import news2
-from time_interval import next_eval_interval
 from prompts import SYSTEM_PROMPT
+from severity import band, relaxing
+from theme import current_mode, inject_theme, toggle_mode
+from time_interval import next_eval_interval
+from ui import (
+    alert_card,
+    detail_grid,
+    figure,
+    icon,
+    metric_strip,
+    page_header,
+    patient_header,
+    queue_row,
+    section,
+    stat,
+    vitals_row,
+)
 
-# --- Environment Setup ---
 load_dotenv()
 SPUR_API_KEY = os.getenv("SPUR_GEMMA_4_KEY")
 API_URL = "https://ai.spuric.com/v1/chat/completions"
 
-st.set_page_config(page_title="Triage Re-Evaluation Copilot", page_icon="🏥", layout="wide")
+st.set_page_config(
+    page_title="Triage Re-Evaluation Monitor",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# Path to the intake CSV file
-CSV_FILE_PATH = "./data/processed/triage_features_control.csv" 
+MD = dict(unsafe_allow_html=True)
 
-# --- Core Logic ---
-def calculate_patient_metrics(row):
-    """Computes NEWS2 and re-evaluation interval for an individual patient row from CSV."""
-    rr = row.get('triage_rr', row.get('RR', 16))
-    spo2 = row.get('triage_spo2', row.get('Saturation', 98))
-    o2 = row.get('triage_on_oxygen', row.get('O2_supp', False))
-    sbp = row.get('triage_sbp', row.get('SBP', 120))
-    hr = row.get('triage_hr', row.get('HR', 80))
-    temp = row.get('triage_temp_c', row.get('Temp', 36.6))
-    alert = row.get('alert', True)
-    
-    # 1. Calculate NEWS2 score components
-    news2_res = news2(rr, spo2, o2, sbp, hr, temp, alert)
-    score = news2_res['aggregate']
-    max_param = news2_res['max_single_param']
-    
-    # 2. Calculate mandatory re-evaluation interval via time_interval.py
-    esi = int(row.get('esi_level', 3))
-    interval_data = next_eval_interval(score, max_param, esi)
-    
-    return {
-        "NEWS2_Score": score,
-        "Max_Single_Param": max_param,
-        "Reeval_Interval_Min": interval_data['interval_min'],
-        "Interval_Driver": interval_data['driver']
+# NEWS2 thresholds per parameter, used only to flag a vital in the UI.
+_ABNORMAL = {
+    "RR":   lambda v: v <= 11 or v >= 21,
+    "SpO2": lambda v: v <= 95,
+    "SBP":  lambda v: v <= 110 or v >= 220,
+    "HR":   lambda v: v <= 50 or v >= 91,
+    "Temp": lambda v: v <= 36.0 or v >= 38.1,
+}
+
+
+# --- Deterministic pipeline -------------------------------------------------
+
+def recalculate_and_sort_queue(df: pd.DataFrame) -> pd.DataFrame:
+    """Applies the deterministic NEWS2 rules and orders the worklist."""
+    if df.empty:
+        return df
+
+    scores, max_params, components, bands, intervals = [], [], [], [], []
+    prev_scores = df["NEWS2_Prev"].tolist()
+
+    for (_, row), prev in zip(df.iterrows(), prev_scores):
+        result = news2(row["RR"], row["SpO2"], row["O2_supp"], row["SBP"],
+                       row["HR"], row["Temp"], row["Alert"])
+        delta = int(result["aggregate"] - prev)
+        scores.append(result["aggregate"])
+        max_params.append(result["max_single_param"])
+        components.append(result["components"])
+        bands.append(band(result["aggregate"], result["max_single_param"], delta))
+        intervals.append(next_eval_interval(result["aggregate"],
+                                            result["max_single_param"], int(row["ESI"])))
+
+    df = df.assign(
+        NEWS2_Score=scores, Max_Single_Param=max_params, Components=components,
+        Band=bands, Interval=intervals,
+        Delta=[int(s - p) for s, p in zip(scores, prev_scores)],
+        _rank=[b["rank"] for b in bands],
+    )
+    return df.sort_values(["_rank", "NEWS2_Score"], ascending=False) \
+             .drop(columns=["_rank"]).reset_index(drop=True)
+
+
+OPENING_COHORT = 12
+
+
+@st.cache_data(show_spinner="Loading patients from the triage dataset…")
+def patient_pool() -> pd.DataFrame:
+    """Every patient this session can show: the opening waiting room plus the
+    intake queue that sequential admission draws from."""
+    return load_pool()
+
+
+def initial_queue() -> pd.DataFrame:
+    return recalculate_and_sort_queue(patient_pool().head(OPENING_COHORT).copy())
+
+
+def admit_next(queue: pd.DataFrame) -> pd.DataFrame | None:
+    """Admit the next patient from intake and re-rank the worklist.
+
+    Sequential arrival, ported from the intake flow on main: a patient walks
+    in, is scored by the same deterministic pipeline, and lands wherever the
+    rules put them — which may be straight to the top.
+    """
+    pool = patient_pool()
+    already = set(queue["ID"]) if not queue.empty else set()
+    remaining = pool[~pool["ID"].isin(already)]
+    if remaining.empty:
+        return None
+    arriving = remaining.head(1)
+    return recalculate_and_sort_queue(
+        pd.concat([queue, arriving], ignore_index=True) if not queue.empty else arriving.copy()
+    )
+
+
+def generate_focus_note(patient: pd.Series) -> str:
+    """Gemma API call using the structured JSON prompt.
+
+    Language only. The band, the interval, and the decision to alert were all
+    made by the deterministic rules before this function is ever called.
+    """
+    drivers = [{"param": k, "score": int(v)}
+               for k, v in sorted(patient["Components"].items(), key=lambda kv: -kv[1]) if v > 0][:3]
+    interval = patient["Interval"]
+
+    payload_facts = {
+        "patient": patient["ID"],
+        "news2_prev": int(patient["NEWS2_Prev"]),
+        "news2_now": int(patient["NEWS2_Score"]),
+        "drivers": drivers or [{"param": "no scoring parameter", "score": 0}],
+        "relevant_history": [patient["Complaint"], patient["History"]],
+        "interval_status": (f"reassessment due every {interval['interval_min']} min, "
+                            f"floored by {interval['driver']}"),
     }
 
-def insert_patient_into_queue(queue_df, new_patient_row):
-    """
-    Appends a new patient to the existing queue and sorts it by priority 
-    (highest NEWS2 score first, followed by the shortest re-evaluation interval).
-    """
-    # Calculate metrics for the incoming patient
-    metrics = calculate_patient_metrics(new_patient_row)
-    
-    # Combine row data with the calculated clinical metrics
-    patient_dict = new_patient_row.to_dict()
-    patient_dict.update(metrics)
-    
-    # Append to the current queue dataframe
-    new_row_df = pd.DataFrame([patient_dict])
-    updated_queue = pd.concat([queue_df, new_row_df], ignore_index=True)
-    
-    # Sort queue according to clinical acuity rules
-    return updated_queue.sort_values(
-        by=['NEWS2_Score', 'Reeval_Interval_Min'], 
-        ascending=[False, True]
-    ).reset_index(drop=True)
+    if not SPUR_API_KEY:
+        names = ", ".join(d["param"] for d in drivers) or "no scoring parameter"
+        return (f"Recheck {patient['ID']} now. NEWS2 {payload_facts['news2_prev']} to "
+                f"{payload_facts['news2_now']}, driven by {names}. {patient['Complaint']}. "
+                "(Offline fallback — set SPUR_GEMMA_4_KEY for Gemma prose.)")
 
-def generate_focus_note(patient_row):
-    """Constructs the JSON payload and calls the Gemma API safely handling NaN values."""
-    history = []
-    for col in ['Chief_complain', 'chief_complaints', 'relevant_history']:
-        if col in patient_row and pd.notna(patient_row[col]):
-            val = str(patient_row[col])
-            history.extend([h.strip() for h in val.split('|')])
-    history = list(set(history))
-    if not history:
-        history = ["No specific history provided"]
-
-    # Safe extraction of initial and worst clinical vitals with NaN checks
-    hr_triage = patient_row.get('triage_hr', patient_row.get('HR', 0))
-    if pd.isna(hr_triage): hr_triage = 0
-    
-    hr_worst = patient_row.get('worst_hr', hr_triage)
-    if pd.isna(hr_worst): hr_worst = hr_triage
-
-    rr_triage = patient_row.get('triage_rr', patient_row.get('RR', 0))
-    if pd.isna(rr_triage): rr_triage = 0
-    
-    rr_worst = patient_row.get('worst_rr', rr_triage)
-    if pd.isna(rr_worst): rr_worst = rr_triage
-
-    spo2_triage = patient_row.get('triage_spo2', patient_row.get('Saturation', 100))
-    if pd.isna(spo2_triage): spo2_triage = 100
-    
-    spo2_worst = patient_row.get('worst_spo2', spo2_triage)
-    if pd.isna(spo2_worst): spo2_worst = spo2_triage
-
-    drivers = []
-    if hr_worst > hr_triage:
-        drivers.append({"param": "heart rate", "from": int(hr_triage), "to": int(hr_worst)})
-    if rr_worst > rr_triage:
-        drivers.append({"param": "resp rate", "from": int(rr_triage), "to": int(rr_worst)})
-    if spo2_worst < spo2_triage:
-        drivers.append({"param": "SpO2", "from": int(spo2_triage), "to": int(spo2_worst)})
-    
-    if not drivers:
-        drivers.append({"param": "vitals stable", "from": int(hr_triage), "to": int(hr_triage)})
-
-    # Safe calculation of NEWS2 scores with NaN handling
-    prev_score = patient_row.get('triage_news2', 0)
-    if pd.isna(prev_score): 
-        prev_score = 0
-    else: 
-        prev_score = int(prev_score)
-    
-    now_score = patient_row.get('worst_news2', prev_score)
-    if pd.isna(now_score): 
-        now_score = prev_score
-    else: 
-        now_score = int(now_score)
-    
-    interval_min = patient_row.get('Reeval_Interval_Min', 60)
-    if pd.isna(interval_min): interval_min = 60
-    
-    driver = patient_row.get('Interval_Driver', 'NEWS2')
-    interval_status_str = f"reassessment required within {int(interval_min)} min, governed by {driver}"
-
-    patient_json_data = {
-        "patient": str(patient_row.get('Name', f"Patient {patient_row.get('source_row_id', 'Unknown')}")),
-        "news2_prev": prev_score,
-        "news2_now": now_score,
-        "drivers": drivers,
-        "relevant_history": history,
-        "interval_status": interval_status_str
-    }
-    
-    formatted_prompt = SYSTEM_PROMPT.replace("{JSON}", json.dumps(patient_json_data))
-    
-    headers = {"Authorization": f"Bearer {SPUR_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "spur-gemma4", "messages": [{"role": "user", "content": formatted_prompt}]}
-    
+    # prompts.py names the slot {JSON}. Substituting the wrong token fails
+    # silently — Gemma would receive the literal placeholder and invent facts.
+    prompt = SYSTEM_PROMPT.replace("{JSON}", json.dumps(payload_facts))
     try:
-        response = requests.post(API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"System Alert: Check patient vitals immediately. Error: {e}"
+        r = requests.post(
+            API_URL,
+            headers={"Authorization": f"Bearer {SPUR_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "spur-gemma4", "messages": [{"role": "user", "content": prompt}]},
+            timeout=20,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        return (f"Recheck {patient['ID']} now. NEWS2 {payload_facts['news2_now']}. "
+                f"(Gemma unavailable: {exc})")
 
-def highlight_critical_patients(row):
-    """CSS background styling for critical patients in the queue table."""
-    if row['NEWS2_Score'] >= 5 or row.get('Max_Single_Param', 0) == 3:
-        return ['background-color: rgba(255, 75, 75, 0.3)'] * len(row)
-    return [''] * len(row)
 
-# --- Session State Initialization ---
+# --- State ------------------------------------------------------------------
+
 if "queue" not in st.session_state:
-    st.session_state.queue = pd.DataFrame() # Initialize queue as empty
-if "csv_index" not in st.session_state:
-    st.session_state.csv_index = 0          # Pointer to track current row in CSV
-if "note_patient_id" not in st.session_state:
-    st.session_state.note_patient_id = None
-if "note_patient_score" not in st.session_state:
-    st.session_state.note_patient_score = None
-if "current_note" not in st.session_state:
-    st.session_state.current_note = None
+    st.session_state.queue = initial_queue()
+if "view" not in st.session_state:
+    st.session_state.view = "focus"
+if "selected" not in st.session_state:
+    st.session_state.selected = None
+if "notes" not in st.session_state:
+    st.session_state.notes = {}
 
-# --- Streamlit UI ---
-st.title("🏥 Triage Re-Evaluation Copilot")
-st.markdown("Sequential ER Intake. Patients are fetched from CSV and dynamically inserted into the risk-ranked queue.")
+inject_theme()
 
-tab_focus, tab_macro = st.tabs(["🩺 Next Action Required", "📋 Risk-Ranked Queue (Macro View)"])
 
-# --- Window 1: Current Patient ---
-with tab_focus:
-    st.header("Immediate Triage Action")
-    
-    # Button to fetch the next sequential patient from the CSV intake file
-    if st.button("📥 Fetch Next Patient from Intake", type="primary"):
-        try:
-            df_chunk = pd.read_csv(CSV_FILE_PATH, skiprows=range(1, st.session_state.csv_index + 1), nrows=1)
-            
-            if not df_chunk.empty:
-                new_patient = df_chunk.iloc[0]
-                st.session_state.queue = insert_patient_into_queue(st.session_state.queue, new_patient)
-                st.session_state.csv_index += 1
-                st.rerun()
+def _select(pid: str) -> None:
+    st.session_state.selected = pid
+    st.session_state.view = "focus"
+
+
+# --- Icon rail --------------------------------------------------------------
+
+with st.sidebar:
+    st.markdown(f'<div class="rail-logo">{icon("stethoscope", 22)}</div>', **MD)
+
+    if st.button("", icon=":material/monitor_heart:", help="Next action required",
+                 key="nav_focus", width="stretch",
+                 type="primary" if st.session_state.view == "focus" else "secondary"):
+        st.session_state.view = "focus"
+        st.rerun()
+
+    if st.button("", icon=":material/format_list_bulleted:", help="Reassessment queue",
+                 key="nav_queue", width="stretch",
+                 type="primary" if st.session_state.view == "queue" else "secondary"):
+        st.session_state.view = "queue"
+        st.rerun()
+
+    if st.button("", icon=":material/rule:", help="How the rules work",
+                 key="nav_rules", width="stretch",
+                 type="primary" if st.session_state.view == "rules" else "secondary"):
+        st.session_state.view = "rules"
+        st.rerun()
+
+    st.markdown('<div class="rail-rule"></div>', **MD)
+
+    dark = current_mode() == "dark"
+    if st.button("", icon=":material/bedtime:" if not dark else ":material/light_mode:",
+                 help="Night shift" if not dark else "Day shift",
+                 key="nav_theme", width="stretch"):
+        toggle_mode()
+        st.rerun()
+
+    if st.button("", icon=":material/refresh:", help="Resample cohort", key="nav_reset",
+                 width="stretch"):
+        patient_pool.clear()
+        st.session_state.queue = initial_queue()
+        st.session_state.selected = None
+        st.session_state.notes = {}
+        st.rerun()
+
+q = st.session_state.queue
+n_alerting = sum(1 for b in q["Band"] if b["key"] == "escalate") if not q.empty else 0
+n_watch = sum(1 for b in q["Band"] if b["key"] == "watch") if not q.empty else 0
+soonest = min((r["interval_min"] for r in q["Interval"]), default=0) if not q.empty else 0
+
+# Selected patient defaults to the top of the worklist.
+if not q.empty:
+    if st.session_state.selected not in set(q["ID"]):
+        st.session_state.selected = q.iloc[0]["ID"]
+    patient = q[q["ID"] == st.session_state.selected].iloc[0]
+else:
+    patient = None
+
+
+# --- View: next action required ---------------------------------------------
+
+if st.session_state.view == "focus":
+    if patient is None:
+        st.markdown(page_header("Waiting room", "The waiting room is clear"), **MD)
+    else:
+        b, interval = patient["Band"], patient["Interval"]
+        headline = ("Recheck this patient now" if b["key"] == "escalate"
+                    else f"Next check in {interval['interval_min']} minutes")
+        st.markdown(
+            page_header(
+                "Waiting room — triaged, not yet seen",
+                headline,
+                f"{n_alerting} of {len(q)} patients have a rule firing right now.",
+            ),
+            **MD,
+        )
+
+        left, right = st.columns([0.85, 1.5], gap="large")
+
+        # The figure IS the audit trail: each zone is filled from its own
+        # NEWS2 component subscore. Nothing here is model output.
+        with left:
+            st.markdown(figure(patient["Components"]), **MD)
+
+        with right:
+            st.markdown(patient_header(patient["ID"], b["key"], patient["Complaint"]), **MD)
+
+            st.markdown(
+                detail_grid([
+                    ("Age", f"{patient['Age']} years"),
+                    ("Sex", patient["Sex"]),
+                    ("Acuity", f"ESI {patient['ESI']}"),
+                    ("Arrived by", patient["Arrival"]),
+                    ("Relevant history", patient["History"], "wide"),
+                ]),
+                **MD,
+            )
+
+            st.markdown(
+                metric_strip([
+                    ("NEWS2 now", patient["NEWS2_Score"],
+                     b["key"] if b["key"] in ("watch", "escalate") else None),
+                    ("At triage", patient["NEWS2_Prev"], None),
+                    ("Worst parameter", patient["Max_Single_Param"],
+                     "escalate" if patient["Max_Single_Param"] == 3 else None),
+                    ("Recheck in", f"{interval['interval_min']}m", None),
+                ]),
+                **MD,
+            )
+
+            st.markdown(
+                vitals_row([
+                    ("Resp", patient["RR"], _ABNORMAL["RR"](patient["RR"])),
+                    ("SpO2", f"{patient['SpO2']}%", _ABNORMAL["SpO2"](patient["SpO2"])),
+                    ("O2", "Yes" if patient["O2_supp"] else "No", bool(patient["O2_supp"])),
+                    ("Systolic", patient["SBP"], _ABNORMAL["SBP"](patient["SBP"])),
+                    ("Pulse", patient["HR"], _ABNORMAL["HR"](patient["HR"])),
+                    ("Temp", f"{patient['Temp']}°", _ABNORMAL["Temp"](patient["Temp"])),
+                ]),
+                **MD,
+            )
+
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                if st.button("Generate focus note", type="primary", width="stretch"):
+                    with st.spinner("Gemma is phrasing the alert…"):
+                        st.session_state.notes[patient["ID"]] = generate_focus_note(patient)
+            with c2:
+                if st.button("Acknowledge and clear", width="stretch"):
+                    st.session_state.queue = q[q["ID"] != patient["ID"]].reset_index(drop=True)
+                    st.session_state.selected = None
+                    st.rerun()
+
+            note = st.session_state.notes.get(patient["ID"])
+            fired = bool(b["reasons"])
+            st.markdown(
+                alert_card(
+                    note or ("Press Generate focus note — Gemma phrases the alert. "
+                             "The rule below has already fired."
+                             if fired else
+                             "No reassessment rule has fired for this patient."),
+                    b["reasons"] or ["no rule fired"],
+                    (f"Interval floored by {interval['driver']}. NEWS2 band says "
+                     f"{interval['news2_says']} minutes, ESI floor says "
+                     f"{interval['esi_says']} minutes, and the stricter one wins."),
+                    fired=fired,
+                ),
+                **MD,
+            )
+
+
+# --- View: reassessment queue -----------------------------------------------
+
+elif st.session_state.view == "queue":
+    st.markdown(
+        page_header("Reassessment queue", "Who to recheck next",
+                    "Ranked by rule severity, then by NEWS2."),
+        **MD,
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(stat("In waiting room", len(q), "triaged, not seen", "users"), **MD)
+    with c2:
+        st.markdown(stat("Alerting now", n_alerting, "rule fired", "alert",
+                         tone="escalate" if n_alerting else None), **MD)
+    with c3:
+        st.markdown(stat("Rising", n_watch, "NEWS2 3 to 4", "pulse",
+                         tone="watch" if n_watch else None), **MD)
+    with c4:
+        st.markdown(stat("Soonest recheck", f"{soonest}m", "across queue", "clock"), **MD)
+
+    st.markdown(section("Worklist"), **MD)
+
+    act_admit, act_sim, _ = st.columns([1, 1, 2])
+
+    with act_admit:
+        if st.button("Admit next patient", icon=":material/person_add:", width="stretch",
+                     help="A new patient arrives from intake and is ranked by the rules."):
+            updated = admit_next(q)
+            if updated is None:
+                st.toast("No patients left in intake.")
             else:
-                st.warning("No more patients left in the intake CSV file.")
-        except Exception as e:
-            st.error(f"Error reading CSV file: {e}. Ensure '{CSV_FILE_PATH}' exists in the project path.")
-
-    st.divider()
-
-    if not st.session_state.queue.empty:
-        top_patient = st.session_state.queue.iloc[0]
-        
-        st.error(f"**Re-evaluate immediately:** Patient ID {top_patient.get('source_row_id', 'Unknown')} (NEWS2: {top_patient['NEWS2_Score']}, Interval: {top_patient['Reeval_Interval_Min']}m)")
-        
-        # Automatically generate a focus note for the new queue leader
-        patient_unique_key = f"{top_patient.get('source_row_id', 0)}_{top_patient['NEWS2_Score']}"
-        if st.session_state.note_patient_id != patient_unique_key:
-            with st.spinner("Gemma is synthesizing context..."):
-                st.session_state.current_note = generate_focus_note(top_patient)
-                st.session_state.note_patient_id = patient_unique_key
-
-        st.info(f"**Gemma Focus Note:** {st.session_state.current_note}")
-        
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("✅ Acknowledge & Clear Patient", width="stretch"):
-                st.session_state.queue = st.session_state.queue.iloc[1:].reset_index(drop=True)
-                st.session_state.note_patient_id = None
+                st.session_state.queue = updated
                 st.rerun()
-                
-        with col_btn2:
-            if st.button("⏸️ Keep in Queue (No Action)", width="stretch"):
-                st.rerun()
-                
-        st.divider()
-        st.subheader("Critical Vitals Snapshot")
-        col_v1, col_v2, col_v3 = st.columns(3)
-        col_v1.metric("NEWS2 Score", top_patient['NEWS2_Score'])
-        col_v2.metric("SpO2", f"{top_patient.get('triage_spo2', top_patient.get('Saturation', 'N/A'))}%")
-        col_v3.metric("Heart Rate", top_patient.get('triage_hr', top_patient.get('HR', 'N/A')))
-        
-    else:
-        st.info("The waiting room queue is currently empty. Click **'Fetch Next Patient from Intake'** above to admit a patient from the CSV.")
 
-# --- Window 2: Whole Picture ---
-with tab_macro:
-    st.header("Overall ER Status")
-    st.write("Patients are dynamically inserted and sorted by their NEWS2 score and mandatory re-evaluation interval.")
-    
-    if not st.session_state.queue.empty:
-        styled_queue = st.session_state.queue.style.apply(highlight_critical_patients, axis=1)
-        st.dataframe(styled_queue, width="stretch", hide_index=True)
-    else:
-        st.write("No patients currently in the waiting room.")
+    with act_sim:
+        if st.button("Simulate deterioration", icon=":material/trending_down:", width="stretch",
+                     help="Crashes the most stable patient's vitals to show the queue reorder."):
+            if len(q) > 1:
+                idx = len(q) - 1
+                q.at[idx, "SpO2"] = random.randint(85, 89)
+                q.at[idx, "RR"] = random.randint(25, 30)
+                q.at[idx, "HR"] = random.randint(130, 145)
+                st.session_state.queue = recalculate_and_sort_queue(q)
+                st.rerun()
+
+    for i, (_, row) in enumerate(q.iterrows(), 1):
+        row_col, btn_col = st.columns([20, 1], vertical_alignment="center")
+        with row_col:
+            st.markdown(
+                queue_row(
+                    rank=i,
+                    name=row["ID"],
+                    complaint=row["Complaint"],
+                    meta=[f"{row['Age']} years", row["Sex"], f"ESI {row['ESI']}", row["Arrival"]],
+                    news2=int(row["NEWS2_Score"]),
+                    band_key=row["Band"]["key"],
+                    due=f"{row['Interval']['interval_min']} min",
+                    delta=int(row["Delta"]),
+                    selected=row["ID"] == st.session_state.selected,
+                ),
+                **MD,
+            )
+        with btn_col:
+            if st.button("", icon=":material/chevron_right:", key=f"open_{row['ID']}",
+                         help=f"Open {row['ID']}"):
+                _select(row["ID"])
+                st.rerun()
+
+    if any(relaxing(d) for d in q["Delta"]):
+        st.markdown(
+            '<p class="t-small">Patients whose NEWS2 dropped by 2 or more have been '
+            "de-prioritised and their interval relaxed.</p>",
+            **MD,
+        )
+
+
+# --- View: rules ------------------------------------------------------------
+
+else:
+    st.markdown(
+        page_header("Method", "Deterministic, and visibly so",
+                    "An LLM never decides who escalates."),
+        **MD,
+    )
+
+    a, b_ = st.columns(2, gap="large")
+    with a:
+        st.markdown(
+            '<div class="card"><h3 class="t-h3">The rules decide</h3>'
+            '<p class="t-body" style="margin-top:12px">An alert fires if <b>any</b> of:</p>'
+            '<p class="t-body">NEWS2 aggregate reaches 5<br>'
+            "Any single parameter scores 3<br>"
+            "NEWS2 rose by 2 or more since the last check</p>"
+            '<p class="t-body" style="margin-top:12px">The interval is the '
+            "<b>stricter</b> of the NEWS2 band and the ESI floor, so neither "
+            "rulebook can silently override the other.</p></div>",
+            **MD,
+        )
+    with b_:
+        st.markdown(
+            '<div class="card"><h3 class="t-h3">Gemma explains</h3>'
+            '<p class="t-body" style="margin-top:12px">Gemma writes the intake focus '
+            "note and the one-line alert explanation. It never selects who escalates, "
+            "never sets an interval, and never assigns acuity.</p>"
+            '<p class="t-body" style="margin-top:12px">Red in this interface means a '
+            "deterministic rule fired. It is never a brand colour and never a model "
+            "opinion.</p></div>",
+            **MD,
+        )
+
+    st.markdown(section("Known approximations", "Named, not hidden."), **MD)
+    st.markdown(
+        '<div class="card"><p class="t-body">'
+        "<b>Consciousness.</b> The dataset has no ACVPU field, so it is proxied from the "
+        "altered-mental-status, confusion, lethargy and unresponsive complaint flags. "
+        "This under-detects subtle confusion.</p>"
+        '<p class="t-body" style="margin-top:14px"><b>ESI intervals.</b> Unlike CTAS, ESI '
+        "publishes no official reassessment intervals. Our map is an acuity-ordered "
+        "approximation, strongest for levels 1 to 3.</p>"
+        '<p class="t-body" style="margin-top:14px"><b>NEWS2 Scale 2.</b> No flag identifies '
+        "chronic hypercapnic patients, so Scale 1 is used throughout.</p>"
+        '<p class="t-body" style="margin-top:14px"><b>Trajectory.</b> Patients are real ED '
+        "visits. The dataset holds a triage reading and a later reading per visit, which "
+        "is what produces the NEWS2 delta. It is not a continuous stream.</p></div>",
+        **MD,
+    )

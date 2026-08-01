@@ -11,6 +11,6 @@ numpy
 # Environment, API Client & UI
 python-dotenv
 requests
-gradio
+streamlit
 jupyter
-python-dotenv
+dotenv
